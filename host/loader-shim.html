@@ -1,0 +1,42 @@
+<!doctype html><html><head><meta charset=utf-8><title>UT4 WebGPU test</title>
+<style>
+body{margin:0;background:#0b0e14;color:#9fe;font:12px/1.35 monospace}
+#log{position:fixed;left:0;top:0;width:58%;height:100%;overflow:auto;white-space:pre-wrap;padding:8px;box-sizing:border-box;background:#000a;z-index:10}
+canvas{position:absolute;right:0;top:0;width:42%;height:100%;background:#000}
+.g{color:#4f8}.r{color:#f66}.y{color:#fd6}.c{color:#6df}
+</style></head>
+<body>
+<div id=log></div>
+<canvas id=canvas oncontextmenu="event.preventDefault()" tabindex=-1></canvas>
+<script>
+const L=document.getElementById('log');
+function line(s,cls){const d=document.createElement('div');if(cls)d.className=cls;d.textContent=String(s).slice(0,600);L.appendChild(d);}
+line('=== environment ===','c');
+line('crossOriginIsolated = '+self.crossOriginIsolated, self.crossOriginIsolated?'g':'r');
+line('SharedArrayBuffer    = '+(typeof SharedArrayBuffer!=='undefined'), (typeof SharedArrayBuffer!=='undefined')?'g':'r');
+line('navigator.gpu        = '+(!!navigator.gpu), navigator.gpu?'g':'r');
+(async()=>{ if(navigator.gpu){ try{
+  const a=await navigator.gpu.requestAdapter();
+  line('requestAdapter()     => '+(a?'OK':'null'), a?'g':'r');
+  if(a){ try{const info=await a.requestAdapterInfo?a.requestAdapterInfo():(a.info||{}); line('adapter: '+JSON.stringify(info).slice(0,200));}catch(e){}
+    const dev=await a.requestDevice(); line('requestDevice()      => '+(dev?'OK':'null'), dev?'g':'r'); }
+}catch(e){ line('WebGPU probe error: '+e,'r'); } } })();
+line('=== loading UnrealTournament.wasm (156MB) — compile takes a bit ===','c');
+// self-host shim: stub the SimplyStream platform-loader state so it boots standalone
+window.parent = window;
+window.state = window.parent.state = { ias:{}, project_id:'test', project_rev:'0', session_id:'00000000-0000-0000-0000-000000000000', platform_addr:'', asset_routing:{}, edge_boost_asset_host:'', vfs_asset_base_url:'' };
+const _l=console.log,_e=console.error,_w=console.warn;
+console.log=(...a)=>{line(a.join(' '));_l(...a);};
+console.warn=(...a)=>{line(a.join(' '),'y');_w(...a);};
+console.error=(...a)=>{line(a.join(' '),'r');_e(...a);};
+window.onerror=(m)=>line('window.onerror: '+m,'r');
+var Module={
+  canvas:document.getElementById('canvas'), arguments:[], gameinfodata:null, prefetch:null, ias:null,
+  print:(t)=>line(t), printErr:(t)=>line(t,'r'),
+  locateFile:(p,pre)=>(pre||'')+p,
+  onAbort:(w)=>line('ABORT: '+w,'r'),
+  onRuntimeInitialized:()=>line('*** onRuntimeInitialized — wasm instantiated OK ***','g'),
+};
+</script>
+<script async src="UnrealTournament.js"></script>
+</body></html>
