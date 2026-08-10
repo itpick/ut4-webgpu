@@ -121,69 +121,106 @@ the checkerboard-upload code in `DawnRHITestMain.cpp` for the fixed
 pattern). `RHIReadSurfaceData`'s use of `FColor(R,G,B,A)`'s **named**
 constructor+accessors is fine (no raw memcpy there).
 
-## Shader-cook path (HLSL→SPIR-V→WGSL): blocked, precise wall documented
+## Shader-cook path (HLSL→SPIR-V→WGSL): wall #1 (ShaderConductor SIGSEGV) FIXED
 
 **ShaderConductor (HLSL→SPIR-V) is present and open** — NOT SimplyStream's
 code, it's Epic's own standard `Engine/Source/ThirdParty/ShaderConductor`
 (headers + Linux `.so` prebuilt at
 `Engine/Binaries/ThirdParty/ShaderConductor/Linux/x86_64-unknown-linux-gnu/`).
-UE also ships its own open wrapper,
-`Engine/Source/Developer/ShaderCompilerCommon/Public/ShaderConductorContext.h`
-— worth trying instead of the raw `ShaderConductor::Compiler` API below,
-untested this session.
 
-**Confirmed working:** linking + running ShaderConductor's HLSL frontend
-(DXC/Clang-based) via UBT's own toolchain — see
-`Engine/Source/Programs/DawnRHITest/DawnRHITest.Build.cs`
-(`AddEngineThirdPartyPrivateStaticDependencies(Target, "ShaderConductor")`)
-and `ShaderConductorSmokeTest()` in `DawnRHITestMain.cpp` (guarded behind
-`-testshaderconductor`, off by default so it doesn't block the working
-scene render).
+### The wall (as last documented) and its root cause
 
-**The wall:** `ShaderConductor::Compiler::Compile(...)` reproducibly
-SIGSEGVs — confirmed via `gdb` backtrace — inside **SPIRV-Tools'
-internal passes**, not the HLSL frontend (which runs fine):
-- With default `Options` (optimizations on): crashes in
-  `spvtools::opt::InlineExhaustivePass::Process` / `InitializeInline`.
-- With `Options.disableOptimizations = true`: still crashes, in a
-  *different* pass — `clang::spirv::SpirvEmitter::spirvToolsTrimCapabilities`,
-  which is apparently a mandatory legalization step SPIRV-Tools always
-  runs regardless of that flag. Crash is inside `IRContext`'s destructor /
-  an internal `unordered_map` deallocation — looks like heap corruption.
+`ShaderConductor::Compiler::Compile(...)` reproducibly SIGSEGV'd —
+confirmed via `gdb` backtrace — inside **SPIRV-Tools' internal passes**,
+not the HLSL frontend (which ran fine): with default `Options`
+(optimizations on) inside `spvtools::opt::InlineExhaustivePass`; with
+`Options.disableOptimizations = true`, inside
+`spirvToolsTrimCapabilities` (a mandatory legalization step SPIRV-Tools
+always runs). Crash was inside `IRContext`'s destructor / an internal
+`unordered_map` deallocation — heap corruption.
 
-**Ruled out this session** (each independently retested):
-- Wrong/mismatched toolchain — rebuilt via UBT's exact
-  `v26_clang-20.1.8-rockylinux8` (confirmed identical path embedded in the
-  vendored `.so`'s own debug symbols — not a guess).
-- Shader content/complexity — a maximally trivial passthrough shader
-  (`float4 vs_main(float3 p:POSITION):SV_Position{return float4(p,1);}`)
-  crashes identically to a cbuffer+struct shader.
-- UE's Mimalloc allocator override — crashes identically with
-  `-ansimalloc` (plain libc malloc/free).
+Ruled out previously: wrong/mismatched toolchain, shader content/
+complexity, UE's Mimalloc allocator override (all retested, all crashed
+identically either way).
 
-**Working hypothesis, untested:** Epic never calls this exact
-DXC+SPIRV-Tools stack in-process from an arbitrary program — it always
-runs inside the dedicated `ShaderCompileWorker` process (see
-`Engine/Source/Programs/ShaderCompileWorker/ShaderCompileWorker.Target.cs`),
-which has specific isolation/build flags (`bCompileAgainstEngine=false`,
-disabled ICU, etc.) precisely because it hosts fragile third-party
-compiler libraries. **Next steps for a fresh agent, roughly in order of
-effort:**
-1. Try `ShaderConductorContext` (UE's own wrapper, `ShaderCompilerCommon`
-   module) instead of raw `ShaderConductor::Compiler` — it may already
-   route around whatever's crashing, or fail more informatively.
-2. Try calling DXC directly (skip ShaderConductor's C++ wrapper and its
-   SPIRV-Tools legalization/trim-capabilities step) via
-   `libdxcompiler.so`'s own `DxcCreateInstance` COM-style API — get raw,
-   unlegalized SPIR-V, and let Tint's reader handle it (Tint may not need
-   fully legalized/trimmed input).
-3. Replicate `ShaderCompileWorker`'s actual isolation (either literally
-   run shaders through a subprocess'd `ShaderCompileWorker`-alike, or
-   diff its `Target.cs`/module deps against `DawnRHITest`'s to find the
-   load-bearing difference).
-4. File/search for known ShaderConductor+SPIRV-Tools Linux issues
-   upstream (microsoft/ShaderConductor) — this may be a known bug in this
-   specific vendored build.
+### Root cause, found and fixed this session
+
+**libc++ symbol interposition**, not anything about `ShaderCompileWorker`
+isolation. Evidence (`readelf --dyn-syms` on both images):
+`libShaderConductor.so` statically links its own private copy of libc++
+(~893 default-visibility, GLOBAL/WEAK-bound `std::__1::...` symbols) and
+has **zero** `libc++.so`/`libstdc++.so` in its `NEEDED` list — fully
+self-contained. `DawnRHITest`, once linked against Core/RHI/etc, is
+*also* a fully self-contained libc++ binary (~1188 duplicate
+default-visibility libc++ symbols of its own, likewise zero external
+libc++/libstdc++ dependency). Linking the `.so` normally
+(`PublicAdditionalLibraries` → ELF `DT_NEEDED`) puts both into the same
+global ELF symbol scope at process startup; per standard symbol
+resolution, default-visibility GLOBAL/WEAK symbols can be interposed
+across that scope — so internal calls made *inside* the `.so` (e.g.
+SPIRV-Tools' `IRContext`/`unordered_map` destructors) were silently
+resolving to the executable's copy of the same weak template
+instantiation instead of the `.so`'s own — exactly the observed heap
+corruption.
+
+**Confirmed via a minimal standalone repro** (outside UBT, no UE deps):
+a tiny program that `dlopen()`s `libShaderConductor.so` +
+`libdxcompiler.so` and resolves every needed symbol (including
+`ShaderConductor::Blob`'s ctor/`Data()`/`Size()`) via `dlsym` — never a
+compile-time link — calls `Compiler::Compile` cleanly for **both**
+previously-crashing paths (default `Options` and
+`disableOptimizations=true`), producing valid SPIR-V (magic
+`0x07230203`), in both plain `RTLD_GLOBAL` mode and `RTLD_DEEPBIND` mode.
+The interposition only actually bites when the *caller* is itself a
+large binary with matching duplicate template symbols (the minimal probe
+has ~0 of its own; `DawnRHITest` has ~1188) — consistent with the theory.
+
+### The fix (applied, verified in the real UE binary — not just the probe)
+
+New `Engine/Source/Programs/DawnRHITest/Private/DawnShaderConductorLoader.h`
++ `.cpp`: a small `FDawnShaderConductorLoader` class that `dlopen()`s
+`libdxcompiler.so` then `libShaderConductor.so` at runtime with
+`RTLD_NOW | RTLD_DEEPBIND` (never a compile-time link — see the header's
+full writeup) and resolves `Compiler::Compile` +
+`Blob::Data()`/`Blob::Size()` via `dlsym` using their exact mangled names
+(confirmed via `nm -D --defined-only`). Since `ShaderConductor::Blob`'s
+only data member is a private `BlobImpl*` pointer (no virtuals,
+standard-layout), a `FRawResultDesc`/`FRawBlob` mirror struct lets us
+avoid ever needing the compiler to emit calls to `Blob`'s ctor/dtor
+(which live in the `.so` and would force a link). `Compiler::Compile`'s
+by-value `ResultDesc` return uses the Itanium ABI sret convention (hidden
+pointer, first argument) — called directly as a raw function pointer.
+
+`DawnRHITest.Build.cs` no longer calls
+`AddEngineThirdPartyPrivateStaticDependencies(Target, "ShaderConductor")`
+(that macro adds `PublicAdditionalLibraries`, i.e. the `DT_NEEDED` that
+caused the interposition) — it now only adds the header include path
+(`PublicSystemIncludePaths`), so `libShaderConductor.so` is header-only
+at compile time and loaded exclusively via the new dlopen wrapper at
+runtime. Confirmed via `readelf -d` that the built `DawnRHITest` no
+longer lists `libShaderConductor.so`/`libdxcompiler.so` as `NEEDED`.
+
+**Verified end-to-end in the real UE binary**: `ShaderConductorSmokeTest()`
+now compiles the trivial passthrough HLSL vertex shader to valid SPIR-V
+for BOTH previously-crashing code paths
+(`disableOptimizations=1`: 796 bytes; `=0`: 568 bytes; both
+magic=`0x07230203`), immediately followed by the existing scene render
+still succeeding (`SUCCESS`, `Center pixel = (30,60,200,255)` — unchanged
+from before). Run recipe unchanged (see above); add
+`-testshaderconductor`.
+
+**Next steps for a fresh agent:**
+1. Wire Tint (SPIR-V→WGSL) — see the still-open section below; unblocked
+   now that valid, uncorrupted SPIR-V is producible on demand.
+2. Compile the *actual* vertex/pixel HLSL sources (mirroring
+   `GVertexWGSL`/`GPixelWGSL` in `DawnRHITestMain.cpp`) through
+   `FDawnShaderConductorLoader`, not just the trivial passthrough probe
+   shader — will need cbuffer/texture/sampler HLSL→SPIR-V binding
+   reflection to match DawnRHI's fixed `@group(0){UB@0,Tex@1,Sampler@2}`
+   convention.
+3. Promote `FDawnShaderConductorLoader` from `DawnRHITest` into the
+   `DawnRHI` module proper (as a real cook-time utility / eventual
+   `IShaderFormat`) once the SPIR-V→WGSL leg is wired.
 
 **Tint (SPIR-V→WGSL) not reached yet** — blocked behind the above. But
 worth knowing: `tint::spirv::reader::Parse` and `tint::wgsl::writer::*`

@@ -25,6 +25,8 @@ THIRD_PARTY_INCLUDES_START
 #include <ShaderConductor/ShaderConductor.hpp>
 THIRD_PARTY_INCLUDES_END
 
+#include "DawnShaderConductorLoader.h"
+
 IMPLEMENT_APPLICATION(DawnRHITest, "DawnRHITest");
 
 DEFINE_LOG_CATEGORY_STATIC(LogDawnRHITest, Log, All);
@@ -81,30 +83,30 @@ static TArray<uint8> StringToUtf8Bytes(const TCHAR* Str)
 }
 
 // Stage 2 shader-cook-path probe #1: does Epic's own ShaderConductor
-// (HLSL -> SPIR-V, standard open ThirdParty, prebuilt Linux .so) work when
-// built/linked through UBT's own toolchain?
+// (HLSL -> SPIR-V, standard open ThirdParty, prebuilt Linux .so) work?
 //
-// STATUS: reproducibly crashes (SIGSEGV, heap corruption) inside
-// SPIRV-Tools' internal passes — InlineExhaustivePass when optimizations
-// are enabled, spirvToolsTrimCapabilities (a *mandatory* legalization pass,
-// unaffected by Options::disableOptimizations) otherwise. Confirmed NOT
-// caused by: (a) ad-hoc/wrong toolchain — rebuilt through UBT's own
-// v26_clang-20.1.8-rockylinux8 toolchain, the exact one embedded in the
-// vendored .so's own debug symbols; (b) shader content — a maximally
-// trivial passthrough shader (no cbuffer, no struct) crashes identically;
-// (c) UE's Mimalloc allocator override — crashes identically with
-// `-ansimalloc`. The HLSL Clang-based frontend + SPIR-V emission genuinely
-// run first (real progress), so this isn't a link/load failure.
-//
-// Best remaining hypothesis: Epic normally hosts this exact fragile
-// DXC/SPIRV-Tools stack only inside the dedicated, specially-configured
-// ShaderCompileWorker process (isolated per-shader subprocess, specific
-// build flags) — never called in-process from an arbitrary minimal
-// program the way this probe does. Untested next step: replicate that
-// process-isolation model (or ShaderCompileWorker's exact Target.cs
-// flags) rather than calling ShaderConductor in-process here. Disabled
-// by default (guarded behind -testshaderconductor) so it doesn't block
-// the working DawnRHI scene render below.
+// FORMER STATUS (root-caused and FIXED this session, see
+// DawnShaderConductorLoader.h for the full writeup): calling
+// ShaderConductor::Compiler::Compile via a normal compile-time link
+// (ELF DT_NEEDED) reproducibly SIGSEGV'd inside SPIRV-Tools' internal
+// passes — InlineExhaustivePass with optimizations enabled,
+// spirvToolsTrimCapabilities (a mandatory legalization pass) otherwise.
+// Root cause: libc++ symbol interposition — libShaderConductor.so and
+// this executable are BOTH fully self-contained (statically link their
+// own private copy of libc++, zero external libc++.so/libstdc++.so
+// dependency), so loading the .so into the same ELF global symbol scope
+// let the .so's own *internal* SPIRV-Tools/libc++ calls get silently
+// resolved against the executable's copy instead of its own — heap
+// corruption. Ruled out first: wrong/mismatched toolchain (rebuilt via
+// UBT's exact v26_clang-20.1.8-rockylinux8 toolchain), shader content
+// (a maximally trivial passthrough shader crashed identically), UE's
+// Mimalloc allocator override (crashed identically with -ansimalloc).
+// Confirmed via a minimal standalone dlopen-based repro (zero duplicate
+// libc++ symbols of its own) that Compiler::Compile is NOT fundamentally
+// broken — it produces valid SPIR-V for both previously-crashing code
+// paths (default Options AND disableOptimizations=true) once loaded via
+// dlopen(RTLD_DEEPBIND) instead of a compile-time link. Fix now applied
+// here via FDawnShaderConductorLoader.
 static void ShaderConductorSmokeTest()
 {
 	using namespace ShaderConductor;
@@ -113,32 +115,36 @@ float4 vs_main(float3 inPos : POSITION) : SV_Position {
   return float4(inPos, 1.0);
 }
 )";
-	Compiler::SourceDesc Source = {};
-	Source.source = kHLSL;
-	Source.fileName = "probe.hlsl";
-	Source.entryPoint = "vs_main";
-	Source.stage = ShaderStage::VertexShader;
 
-	Compiler::Options Options = {};
-	Options.disableOptimizations = true; // see DAWNRHI_README / commit log: SPIRV-Tools optimizer crashes in this environment
-	Compiler::TargetDesc Target = {};
-	Target.language = ShadingLanguage::SpirV;
-
-	Compiler::ResultDesc Result = Compiler::Compile(Source, Options, Target);
-	if (Result.hasError)
+	FDawnShaderConductorLoader Loader;
+	FString InitError;
+	if (!Loader.Init(InitError))
 	{
-		const char* Msg = reinterpret_cast<const char*>(Result.errorWarningMsg.Data());
-		UE_LOG(LogDawnRHITest, Error, TEXT("ShaderConductor error: %s"), ANSI_TO_TCHAR(Msg));
+		UE_LOG(LogDawnRHITest, Error, TEXT("FDawnShaderConductorLoader::Init failed: %s"), *InitError);
 		return;
 	}
-	UE_LOG(LogDawnRHITest, Log, TEXT("ShaderConductor SUCCESS: HLSL -> SPIR-V, %u bytes"), (uint32)Result.target.Size());
-	const uint32* Words = reinterpret_cast<const uint32*>(Result.target.Data());
-	UE_LOG(LogDawnRHITest, Log, TEXT("SPIR-V magic = 0x%08x (expect 0x07230203)"), Words[0]);
 
-	TArray<uint8> SpirvBytes;
-	SpirvBytes.Append(reinterpret_cast<const uint8*>(Result.target.Data()), Result.target.Size());
-	FFileHelper::SaveArrayToFile(SpirvBytes, TEXT("/tmp/dawnrhi_sc_probe_vs.spv"));
-	UE_LOG(LogDawnRHITest, Log, TEXT("Wrote /tmp/dawnrhi_sc_probe_vs.spv"));
+	// Exercise BOTH previously-crashing code paths.
+	for (bool bDisableOpt : { true, false })
+	{
+		TArray<uint32> Spirv;
+		FString CompileError;
+		if (!Loader.CompileHlslToSpirv(kHLSL, "probe.hlsl", "vs_main", ShaderStage::VertexShader, bDisableOpt, Spirv, CompileError))
+		{
+			UE_LOG(LogDawnRHITest, Error, TEXT("ShaderConductor error (disableOptimizations=%d): %s"), bDisableOpt ? 1 : 0, *CompileError);
+			continue;
+		}
+		UE_LOG(LogDawnRHITest, Log, TEXT("ShaderConductor SUCCESS (disableOptimizations=%d): HLSL -> SPIR-V, %u bytes, magic=0x%08x"),
+			bDisableOpt ? 1 : 0, Spirv.Num() * 4, Spirv.Num() > 0 ? Spirv[0] : 0);
+
+		if (bDisableOpt)
+		{
+			TArray<uint8> SpirvBytes;
+			SpirvBytes.Append(reinterpret_cast<const uint8*>(Spirv.GetData()), Spirv.Num() * 4);
+			FFileHelper::SaveArrayToFile(SpirvBytes, TEXT("/tmp/dawnrhi_sc_probe_vs.spv"));
+			UE_LOG(LogDawnRHITest, Log, TEXT("Wrote /tmp/dawnrhi_sc_probe_vs.spv"));
+		}
+	}
 }
 
 int RunDawnRHITest()
