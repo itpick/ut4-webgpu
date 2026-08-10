@@ -7,6 +7,20 @@
 # unmodified UT4/engine shader text past the "resolve real UE virtual
 # include paths" problem without needing UE's live shader-compiling
 # infrastructure.
+#
+# --generated-ub-file PATH (session "update 3", see HANDOFF.md "Milestone
+# 2"): every real UE shader implicitly expects /Engine/Generated/
+# GeneratedUniformBuffers.ush to already contain real `cbuffer View { ... }`
+# / `cbuffer Primitive { ... }` declarations, auto-injected by UE's actual
+# shader compiler from FShaderParametersMetadata reflection (see
+# UE::ShaderParameters::AddUniformBufferIncludesToEnvironment,
+# RenderCore/Private/ShaderParameters.cpp) -- this flattener has no access
+# to that C++ reflection itself, so instead of skipping this virtual
+# #include like all other /Engine/Generated/ paths, point it at a real file
+# containing the REAL declaration text pre-dumped via
+# `DawnShaderFormatTest -dumpubdecl <StructName> <outfile>` (which calls
+# the exact same UE reflection API). Concatenate multiple structs' dumps
+# into one file before passing it here if more than one UB is referenced.
 import sys, re, os
 
 ENGINE_SHADERS = "/mnt/models/ss-build/UnrealEngine/Engine/Shaders/Private"
@@ -14,13 +28,17 @@ ENGINE_PUBLIC = "/mnt/models/ss-build/UnrealEngine/Engine/Shaders/Public"
 
 INCLUDE_RE = re.compile(r'^\s*#include\s+"([^"]+)"')
 
+GENERATED_UB_FILE = None  # set via --generated-ub-file, see module docstring above
+
 def resolve(path, current_dir):
     if path.startswith("/Engine/Private/"):
         return os.path.join(ENGINE_SHADERS, path[len("/Engine/Private/"):])
     if path.startswith("/Engine/Public/"):
         return os.path.join(ENGINE_PUBLIC, path[len("/Engine/Public/"):])
+    if path == "/Engine/Generated/GeneratedUniformBuffers.ush" and GENERATED_UB_FILE:
+        return GENERATED_UB_FILE
     if path.startswith("/Engine/Generated/"):
-        return None  # generated content, no real file -- skip
+        return None  # other generated content, no real file -- skip
     # relative to current dir
     return os.path.join(current_dir, path)
 
@@ -54,7 +72,12 @@ def flatten(path, seen, depth=0):
     return "".join(out)
 
 if __name__ == "__main__":
-    root = sys.argv[1]
+    args = sys.argv[1:]
+    if "--generated-ub-file" in args:
+        i = args.index("--generated-ub-file")
+        GENERATED_UB_FILE = args[i + 1]
+        del args[i:i + 2]
+    root = args[0]
     seen = set()
     result = flatten(root, seen)
     sys.stdout.write(result)
