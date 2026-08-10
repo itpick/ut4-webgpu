@@ -72,6 +72,7 @@ private:
 	WGPURenderPassEncoder ActiveRenderPass = nullptr;
 	TRefCountPtr<FDawnBuffer> BoundVertexBuffer;
 	uint32 BoundVertexBufferOffset = 0;
+	FDawnGraphicsPipelineState* CurrentPSO = nullptr; // non-owning; set by RHISetGraphicsPipelineState
 
 	void EnsureCommandEncoder();
 };

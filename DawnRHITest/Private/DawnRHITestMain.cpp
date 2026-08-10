@@ -1,14 +1,9 @@
-// Stage 1 acceptance test: load the DawnRHI module, drive it through UE's
-// real IDynamicRHIModule / FDynamicRHI / IRHICommandContext interfaces
-// (not standalone Dawn calls), render a triangle to an offscreen texture,
-// and read it back to a PPM.
-//
-// This program deliberately does NOT link against the DawnRHI module at
-// compile time — it loads it by name via FModuleManager, exactly like the
-// engine's own RHI selection does for Vulkan/D3D/etc. It also does not use
-// FRHICommandListImmediate's deferred/parallel-translate machinery: Stage 1
-// drives IRHICommandContext directly since FDawnCommandContext executes
-// immediately (see DawnCommandContext.h).
+// Stage 2 acceptance test: a transformed, textured, depth-tested quad through
+// the real DawnRHI (FDynamicRHI/IRHICommandContext), broadening on the
+// Stage 1 triangle test (uniform buffer + MVP, sampled texture + sampler,
+// depth/stencil, RHISetShaderParameters/bind groups). Still hand-authored
+// WGSL — the HLSL->SPIR-V->WGSL cook path is the separate, larger piece of
+// this milestone.
 #include "CoreMinimal.h"
 #include "RequiredProgramMainCPPInclude.h"
 #include "RHI.h"
@@ -18,6 +13,8 @@
 #include "RHITextureInitializer.h"
 #include "RHIBufferInitializer.h"
 #include "RHITypes.h"
+#include "RHIShaderParameters.h"
+#include "RHIUniformBufferLayoutInitializer.h"
 #include "Modules/ModuleManager.h"
 #include "HAL/PlatformFileManager.h"
 #include "Misc/FileHelper.h"
@@ -28,34 +25,44 @@ DEFINE_LOG_CATEGORY_STATIC(LogDawnRHITest, Log, All);
 
 // FRHICommandListBase's real constructor is `protected` — only reachable
 // from a derived type. We don't need any of its deferred-recording
-// machinery for Stage 1 (FDawnCommandContext executes immediately), we
-// only need a valid instance to satisfy the `FRHICommandListBase&`
-// parameter on RHICreateBufferInitializer/RHICreateTextureInitializer.
+// machinery (FDawnCommandContext executes immediately), we only need a
+// valid instance to satisfy the `FRHICommandListBase&` parameter on
+// RHICreateBufferInitializer/RHICreateTextureInitializer.
 class FTestCommandList final : public FRHICommandListBase
 {
 public:
 	FTestCommandList() : FRHICommandListBase(FRHIGPUMask::All(), /*bInImmediate=*/true) {}
 };
 
+// Stage 2 binding convention (see FDawnGraphicsPipelineState::BindGroupLayout):
+// @group(0) @binding(0) uniform MVP buffer, @binding(1) texture, @binding(2) sampler.
 static const TCHAR* GVertexWGSL = TEXT(R"(
+struct Uniforms {
+  mvp : mat4x4<f32>,
+};
+@group(0) @binding(0) var<uniform> uniforms : Uniforms;
+
 struct VSOut {
   @builtin(position) pos : vec4<f32>,
-  @location(0) color : vec3<f32>,
+  @location(0) uv : vec2<f32>,
 };
 
 @vertex
-fn vs_main(@location(0) inPos : vec2<f32>, @location(1) inColor : vec3<f32>) -> VSOut {
+fn vs_main(@location(0) inPos : vec3<f32>, @location(1) inUV : vec2<f32>) -> VSOut {
   var out : VSOut;
-  out.pos = vec4<f32>(inPos, 0.0, 1.0);
-  out.color = inColor;
+  out.pos = uniforms.mvp * vec4<f32>(inPos, 1.0);
+  out.uv = inUV;
   return out;
 }
 )");
 
 static const TCHAR* GPixelWGSL = TEXT(R"(
+@group(0) @binding(1) var tex : texture_2d<f32>;
+@group(0) @binding(2) var samp : sampler;
+
 @fragment
-fn fs_main(@location(0) color : vec3<f32>) -> @location(0) vec4<f32> {
-  return vec4<f32>(color, 1.0);
+fn fs_main(@location(0) uv : vec2<f32>) -> @location(0) vec4<f32> {
+  return textureSample(tex, samp, uv);
 }
 )");
 
@@ -80,34 +87,85 @@ int RunDawnRHITest()
 
 	FTestCommandList CmdList;
 
-	// --- Vertex buffer: pos(vec2) + color(vec3), interleaved, 3 verts ---
-	struct FVertex { float X, Y, R, G, B; };
-	FVertex Verts[3] = {
-		{  0.0f,  0.6f, 1.0f, 0.0f, 0.0f },
-		{ -0.6f, -0.6f, 0.0f, 1.0f, 0.0f },
-		{  0.6f, -0.6f, 0.0f, 0.0f, 1.0f },
+	// --- Quad mesh: pos(vec3) + uv(vec2), 6 verts (2 triangles, no index buffer yet) ---
+	struct FVertex { float X, Y, Z, U, V; };
+	FVertex Verts[6] = {
+		{ -0.5f, -0.5f, 0.0f, 0.0f, 1.0f },
+		{  0.5f, -0.5f, 0.0f, 1.0f, 1.0f },
+		{  0.5f,  0.5f, 0.0f, 1.0f, 0.0f },
+		{ -0.5f, -0.5f, 0.0f, 0.0f, 1.0f },
+		{  0.5f,  0.5f, 0.0f, 1.0f, 0.0f },
+		{ -0.5f,  0.5f, 0.0f, 0.0f, 0.0f },
 	};
 	const uint32 VertexStride = sizeof(FVertex);
 	const uint32 VertexBufferSize = sizeof(Verts);
 
-	FRHIBufferCreateDesc BufDesc = FRHIBufferCreateDesc::Create(TEXT("TriangleVB"), VertexBufferSize, VertexStride, EBufferUsageFlags::VertexBuffer);
+	FRHIBufferCreateDesc BufDesc = FRHIBufferCreateDesc::Create(TEXT("QuadVB"), VertexBufferSize, VertexStride, EBufferUsageFlags::VertexBuffer);
 	FRHIBufferInitializer BufInit = GDynamicRHI->RHICreateBufferInitializer(CmdList, BufDesc);
 	BufInit.WriteData(Verts, VertexBufferSize);
 	FBufferRHIRef VertexBuffer = BufInit.Finalize();
 
-	// --- Vertex declaration matching FVertex ---
 	FVertexDeclarationElementList Elements;
-	Elements.Add(FVertexElement(0, offsetof(FVertex, X), VET_Float2, 0, VertexStride));
-	Elements.Add(FVertexElement(0, offsetof(FVertex, R), VET_Float3, 1, VertexStride));
+	Elements.Add(FVertexElement(0, offsetof(FVertex, X), VET_Float3, 0, VertexStride));
+	Elements.Add(FVertexElement(0, offsetof(FVertex, U), VET_Float2, 1, VertexStride));
 	FVertexDeclarationRHIRef VertexDecl = GDynamicRHI->RHICreateVertexDeclaration(Elements);
 
-	// --- Shaders: hand-authored WGSL (Stage 1 — Stage 3 swaps the producer for HLSL->SPIR-V->WGSL) ---
+	// --- Shaders: hand-authored WGSL (the HLSL->SPIR-V->WGSL cook path is separate work) ---
 	TArray<uint8> VsCode = StringToUtf8Bytes(GVertexWGSL);
 	TArray<uint8> PsCode = StringToUtf8Bytes(GPixelWGSL);
 	FVertexShaderRHIRef VertexShader = GDynamicRHI->RHICreateVertexShader(FRHICreateShaderDesc(VsCode));
 	FPixelShaderRHIRef PixelShader = GDynamicRHI->RHICreatePixelShader(FRHICreateShaderDesc(PsCode));
 
-	// --- Graphics pipeline state ---
+	// --- Sampler + checkerboard texture ---
+	FSamplerStateInitializerRHI SamplerInit(SF_Point, AM_Wrap, AM_Wrap, AM_Wrap);
+	FSamplerStateRHIRef Sampler = GDynamicRHI->RHICreateSamplerState(SamplerInit);
+
+	const int32 TexSize = 8;
+	FRHITextureCreateDesc TexDesc2D = FRHITextureCreateDesc::Create2D(TEXT("Checkerboard"), TexSize, TexSize, PF_R8G8B8A8);
+	TexDesc2D.AddFlags(ETextureCreateFlags::ShaderResource);
+	FRHITextureInitializer TexInit2D = GDynamicRHI->RHICreateTextureInitializer(CmdList, TexDesc2D);
+	{
+		// NOTE: deliberately NOT using TArray<FColor> + raw memcpy here.
+		// FColor's in-memory byte layout on little-endian is B,G,R,A (see
+		// Math/Color.h) — a memcpy of FColor structs into an RGBA8Unorm
+		// texture silently swaps the R and B channels. The texture format
+		// we declared (PF_R8G8B8A8 -> WGPUTextureFormat_RGBA8Unorm) means
+		// "byte 0 is R", so we write explicit R,G,B,A bytes to match.
+		FRHITextureSubresourceInitializer Sub = TexInit2D.GetTexture2DSubresource(0);
+		TArray<uint8> Checker;
+		Checker.SetNumUninitialized(TexSize * TexSize * 4);
+		for (int32 y = 0; y < TexSize; ++y)
+		{
+			for (int32 x = 0; x < TexSize; ++x)
+			{
+				bool bEven = ((x / 2) + (y / 2)) % 2 == 0;
+				uint8* Px = &Checker[(y * TexSize + x) * 4];
+				if (bEven) { Px[0] = 255; Px[1] = 200; Px[2] = 40;  Px[3] = 255; }
+				else       { Px[0] = 30;  Px[1] = 60;  Px[2] = 200; Px[3] = 255; }
+			}
+		}
+		Sub.WriteData(Checker.GetData(), Checker.Num());
+	}
+	FTextureRHIRef CheckerTexture = TexInit2D.Finalize();
+
+	// --- Uniform buffer: MVP = uniform scale 0.7 + translate (0.2, -0.1) ---
+	// Column-major, matching WGSL's mat4x4<f32> layout, so `mvp * vec4(pos,1)`
+	// applies scale to x/y/z and adds the translation from column 3.
+	struct FUniforms { float Mvp[16]; };
+	FUniforms Uniforms = {};
+	Uniforms.Mvp[0] = 0.7f;  Uniforms.Mvp[1] = 0.0f;  Uniforms.Mvp[2]  = 0.0f; Uniforms.Mvp[3]  = 0.0f;
+	Uniforms.Mvp[4] = 0.0f;  Uniforms.Mvp[5] = 0.7f;  Uniforms.Mvp[6]  = 0.0f; Uniforms.Mvp[7]  = 0.0f;
+	Uniforms.Mvp[8] = 0.0f;  Uniforms.Mvp[9] = 0.0f;  Uniforms.Mvp[10] = 0.7f; Uniforms.Mvp[11] = 0.0f;
+	Uniforms.Mvp[12] = 0.2f; Uniforms.Mvp[13] = -0.1f; Uniforms.Mvp[14] = 0.0f; Uniforms.Mvp[15] = 1.0f;
+
+	FRHIUniformBufferLayoutInitializer LayoutInit(TEXT("DawnRHITestUniforms"), sizeof(FUniforms));
+	TRefCountPtr<FRHIUniformBufferLayout> UBLayout = new FRHIUniformBufferLayout(LayoutInit);
+	FUniformBufferRHIRef UniformBuffer = GDynamicRHI->RHICreateUniformBuffer(&Uniforms, UBLayout, UniformBuffer_MultiFrame, EUniformBufferValidation::None);
+
+	// --- Graphics pipeline state (with depth/stencil) ---
+	FDepthStencilStateInitializerRHI DepthInit(/*bEnableDepthWrite=*/true, CF_LessEqual);
+	FDepthStencilStateRHIRef DepthState = GDynamicRHI->RHICreateDepthStencilState(DepthInit);
+
 	FGraphicsPipelineStateInitializer PsoInit;
 	PsoInit.BoundShaderState.VertexDeclarationRHI = VertexDecl;
 	PsoInit.BoundShaderState.VertexShaderRHI = VertexShader;
@@ -115,23 +173,41 @@ int RunDawnRHITest()
 	PsoInit.PrimitiveType = PT_TriangleList;
 	PsoInit.RenderTargetsEnabled = 1;
 	PsoInit.RenderTargetFormats[0] = UE_PIXELFORMAT_TO_UINT8(PF_R8G8B8A8);
+	PsoInit.DepthStencilTargetFormat = PF_DepthStencil;
+	PsoInit.DepthStencilState = DepthState;
 	FGraphicsPipelineStateRHIRef PSO = GDynamicRHI->RHICreateGraphicsPipelineState(PsoInit);
 
-	// --- Offscreen render target ---
+	// --- Offscreen colour + depth render targets ---
 	const int32 Width = 256, Height = 256;
-	FRHITextureCreateDesc TexDesc = FRHITextureCreateDesc::Create2D(TEXT("Offscreen"), Width, Height, PF_R8G8B8A8);
-	TexDesc.AddFlags(ETextureCreateFlags::RenderTargetable);
-	FRHITextureInitializer TexInit = GDynamicRHI->RHICreateTextureInitializer(CmdList, TexDesc);
-	FTextureRHIRef ColorTarget = TexInit.Finalize();
+	FRHITextureCreateDesc ColorDesc = FRHITextureCreateDesc::Create2D(TEXT("Offscreen"), Width, Height, PF_R8G8B8A8);
+	ColorDesc.AddFlags(ETextureCreateFlags::RenderTargetable);
+	FRHITextureInitializer ColorInit = GDynamicRHI->RHICreateTextureInitializer(CmdList, ColorDesc);
+	FTextureRHIRef ColorTarget = ColorInit.Finalize();
+
+	FRHITextureCreateDesc DepthDesc = FRHITextureCreateDesc::Create2D(TEXT("OffscreenDepth"), Width, Height, PF_DepthStencil);
+	DepthDesc.AddFlags(ETextureCreateFlags::DepthStencilTargetable);
+	FRHITextureInitializer DepthInit2 = GDynamicRHI->RHICreateTextureInitializer(CmdList, DepthDesc);
+	FTextureRHIRef DepthTarget = DepthInit2.Finalize();
 
 	// --- Draw ---
 	IRHICommandContext* Context = GDynamicRHI->RHIGetDefaultContext();
 	FRHIRenderPassInfo RPInfo(ColorTarget, ERenderTargetActions::Clear_Store);
-	Context->RHIBeginRenderPass(RPInfo, TEXT("DawnRHITest.Triangle"));
+	RPInfo.DepthStencilRenderTarget.DepthStencilTarget = DepthTarget;
+	RPInfo.DepthStencilRenderTarget.Action = EDepthStencilTargetActions::ClearDepthStencil_StoreDepthStencil;
+
+	Context->RHIBeginRenderPass(RPInfo, TEXT("DawnRHITest.Quad"));
 	Context->RHISetGraphicsPipelineState(PSO, 0, true);
 	Context->RHISetStreamSource(0, VertexBuffer, 0);
 	Context->RHISetViewport(0, 0, 0, (float)Width, (float)Height, 1);
-	Context->RHIDrawPrimitive(0, 1, 1);
+
+	FRHIShaderParameterResource ResourceParams[3] = {
+		FRHIShaderParameterResource(UniformBuffer.GetReference(), 0),
+		FRHIShaderParameterResource(CheckerTexture.GetReference(), 1),
+		FRHIShaderParameterResource(Sampler.GetReference(), 2),
+	};
+	Context->RHISetShaderParameters(PixelShader.GetReference(), TConstArrayView<uint8>(), TConstArrayView<FRHIShaderParameter>(), TConstArrayView<FRHIShaderParameterResource>(ResourceParams, 3), TConstArrayView<FRHIShaderParameterResource>());
+
+	Context->RHIDrawPrimitive(0, 2, 1);
 	Context->RHIEndRenderPass();
 
 	GDynamicRHI->RHISubmitCommandLists({});
@@ -143,7 +219,7 @@ int RunDawnRHITest()
 	checkf(Pixels.Num() == Width * Height, TEXT("DawnRHI: readback size mismatch"));
 
 	// --- Write PPM ---
-	FString OutPath = TEXT("/tmp/dawnrhi_via_ue_rhi.ppm");
+	FString OutPath = TEXT("/tmp/dawnrhi_scene2.ppm");
 	TArray<uint8> Ppm;
 	FString Header = FString::Printf(TEXT("P6\n%d %d\n255\n"), Width, Height);
 	FTCHARToUTF8 HeaderUtf8(*Header);
@@ -157,8 +233,8 @@ int RunDawnRHITest()
 	FFileHelper::SaveArrayToFile(Ppm, *OutPath);
 	UE_LOG(LogDawnRHITest, Log, TEXT("Wrote %s"), *OutPath);
 
-	const FColor Center = Pixels[(Height / 2 + 20) * Width + Width / 2];
-	UE_LOG(LogDawnRHITest, Log, TEXT("Center-ish pixel = (%d,%d,%d,%d)"), Center.R, Center.G, Center.B, Center.A);
+	const FColor Center = Pixels[(Height / 2) * Width + Width / 2];
+	UE_LOG(LogDawnRHITest, Log, TEXT("Center pixel = (%d,%d,%d,%d)"), Center.R, Center.G, Center.B, Center.A);
 
 	GDynamicRHI->Shutdown();
 	UE_LOG(LogDawnRHITest, Log, TEXT("SUCCESS"));

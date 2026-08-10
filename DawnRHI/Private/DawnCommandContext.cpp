@@ -57,6 +57,7 @@ void FDawnCommandContext::RHISetGraphicsPipelineState(FRHIGraphicsPipelineState*
 	checkf(ActiveRenderPass, TEXT("DawnRHI Stage 1: RHISetGraphicsPipelineState must be called between RHIBeginRenderPass/RHIEndRenderPass"));
 	FDawnGraphicsPipelineState* PSO = static_cast<FDawnGraphicsPipelineState*>(GraphicsState);
 	wgpuRenderPassEncoderSetPipeline(ActiveRenderPass, PSO->Pipeline);
+	CurrentPSO = PSO;
 }
 
 void FDawnCommandContext::RHIDrawPrimitive(uint32 BaseVertexIndex, uint32 NumPrimitives, uint32 NumInstances)
@@ -80,9 +81,9 @@ void FDawnCommandContext::RHIBeginRenderPass(const FRHIRenderPassInfo& InInfo, c
 
 	WGPURenderPassColorAttachment ColorAttach = {};
 	ColorAttach.view = ColorTex->View;
-	// Stage 1 simplification: always clear-then-store. Honouring
+	// Stage 1/2 simplification: always clear-then-store. Honouring
 	// InInfo.ColorRenderTargets[0].Action's load/store combinations is
-	// Stage 2 scope (needs the full ERenderTargetActions decode table).
+	// later-stage scope (needs the full ERenderTargetActions decode table).
 	ColorAttach.loadOp = WGPULoadOp_Clear;
 	ColorAttach.storeOp = WGPUStoreOp_Store;
 	ColorAttach.clearValue = { 0.0, 0.0, 0.0, 1.0 };
@@ -91,6 +92,18 @@ void FDawnCommandContext::RHIBeginRenderPass(const FRHIRenderPassInfo& InInfo, c
 	WGPURenderPassDescriptor RpDesc = {};
 	RpDesc.colorAttachmentCount = 1;
 	RpDesc.colorAttachments = &ColorAttach;
+
+	WGPURenderPassDepthStencilAttachment DepthAttach = {};
+	FDawnTexture* DepthTex = static_cast<FDawnTexture*>(InInfo.DepthStencilRenderTarget.DepthStencilTarget);
+	if (DepthTex && DepthTex->View)
+	{
+		DepthAttach.view = DepthTex->View;
+		DepthAttach.depthLoadOp = WGPULoadOp_Clear;
+		DepthAttach.depthStoreOp = WGPUStoreOp_Store;
+		DepthAttach.depthClearValue = 1.0f;
+		DepthAttach.depthReadOnly = false;
+		RpDesc.depthStencilAttachment = &DepthAttach;
+	}
 
 	ActiveRenderPass = wgpuCommandEncoderBeginRenderPass(CommandEncoder, &RpDesc);
 }
@@ -199,7 +212,63 @@ void FDawnCommandContext::RHIEndRenderQuery(FRHIRenderQuery* RenderQuery)
 
 void FDawnCommandContext::RHISetShaderParameters(FRHIGraphicsShader* Shader, TConstArrayView<uint8> InParametersData, TConstArrayView<FRHIShaderParameter> InParameters, TConstArrayView<FRHIShaderParameterResource> InResourceParameters, TConstArrayView<FRHIShaderParameterResource> InBindlessParameters)
 {
-	checkNoEntry();
+	// Stage 2: build a @group(0) bind group against the fixed
+	// {UB@0, Texture@1, Sampler@2} layout every DawnRHI PSO uses (see the
+	// NOTE on FDawnGraphicsPipelineState::BindGroupLayout). No shader
+	// reflection yet, so each FRHIShaderParameterResource's own Index is
+	// trusted directly as the WGSL binding number.
+	checkf(CurrentPSO && CurrentPSO->BindGroupLayout, TEXT("DawnRHI: RHISetShaderParameters requires RHISetGraphicsPipelineState to have run first"));
+	if (InResourceParameters.Num() == 0)
+	{
+		return;
+	}
+
+	TArray<WGPUBindGroupEntry> Entries;
+	Entries.Reserve(InResourceParameters.Num());
+	for (const FRHIShaderParameterResource& Param : InResourceParameters)
+	{
+		WGPUBindGroupEntry Entry = {};
+		Entry.binding = Param.Index;
+		switch (Param.Type)
+		{
+		case FRHIShaderParameterResource::EType::UniformBuffer:
+		{
+			FDawnUniformBuffer* UB = static_cast<FDawnUniformBuffer*>(Param.Resource);
+			Entry.buffer = UB->Buffer;
+			Entry.size = UB->GetLayout().ConstantBufferSize;
+			break;
+		}
+		case FRHIShaderParameterResource::EType::Texture:
+		{
+			FDawnTexture* Tex = static_cast<FDawnTexture*>(Param.Resource);
+			Entry.textureView = Tex->View;
+			break;
+		}
+		case FRHIShaderParameterResource::EType::Sampler:
+		{
+			FDawnSamplerState* Sampler = static_cast<FDawnSamplerState*>(Param.Resource);
+			Entry.sampler = Sampler->Sampler;
+			break;
+		}
+		default:
+			checkf(false, TEXT("DawnRHI Stage 2: unsupported shader parameter resource type %d"), (int32)Param.Type);
+			continue;
+		}
+		Entries.Add(Entry);
+	}
+
+	WGPUBindGroupDescriptor BgDesc = {};
+	BgDesc.layout = CurrentPSO->BindGroupLayout;
+	BgDesc.entryCount = Entries.Num();
+	BgDesc.entries = Entries.GetData();
+	WGPUBindGroup BindGroup = wgpuDeviceCreateBindGroup(Owner->GetDevice(), &BgDesc);
+	checkf(BindGroup, TEXT("DawnRHI: bind group creation failed"));
+
+	checkf(ActiveRenderPass, TEXT("DawnRHI: RHISetShaderParameters requires an active render pass"));
+	wgpuRenderPassEncoderSetBindGroup(ActiveRenderPass, 0, BindGroup, 0, nullptr);
+	// The render pass encoder retains its own reference while recording;
+	// safe to release our handle once the call above returns.
+	wgpuBindGroupRelease(BindGroup);
 }
 
 void FDawnCommandContext::RHIDrawPrimitiveIndirect(FRHIBuffer* ArgumentBuffer, uint32 ArgumentOffset)

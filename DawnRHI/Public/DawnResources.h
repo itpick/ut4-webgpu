@@ -7,7 +7,12 @@ class FDawnSamplerState : public FRHISamplerState
 {
 public:
 	FSamplerStateInitializerRHI Initializer;
+	WGPUSampler Sampler = nullptr;
 	explicit FDawnSamplerState(const FSamplerStateInitializerRHI& InInit) : Initializer(InInit) {}
+	~FDawnSamplerState()
+	{
+		if (Sampler) { wgpuSamplerRelease(Sampler); }
+	}
 };
 
 class FDawnRasterizerState : public FRHIRasterizerState
@@ -70,6 +75,16 @@ public:
 	TRefCountPtr<FDawnVertexShader> VertexShader;
 	TRefCountPtr<FDawnPixelShader> PixelShader;
 
+	// Stage 2 convention (no shader reflection yet — that lands with the real
+	// shader-cook pipeline): a single, fixed @group(0) bind group layout used
+	// by every PSO — binding 0 = uniform buffer (vertex+fragment visible),
+	// binding 1 = texture (fragment), binding 2 = sampler (fragment). Shaders
+	// that don't use all three simply don't declare the unused bindings in
+	// WGSL; Dawn only requires the *bind group* contents to satisfy whatever
+	// the shader actually references, not the other way around.
+	WGPUBindGroupLayout BindGroupLayout = nullptr;
+	WGPUPipelineLayout PipelineLayout = nullptr;
+
 	virtual FRHIGraphicsShader* GetShader(EShaderFrequency Frequency) const override
 	{
 		switch (Frequency)
@@ -83,6 +98,8 @@ public:
 	~FDawnGraphicsPipelineState()
 	{
 		if (Pipeline) { wgpuRenderPipelineRelease(Pipeline); }
+		if (PipelineLayout) { wgpuPipelineLayoutRelease(PipelineLayout); }
+		if (BindGroupLayout) { wgpuBindGroupLayoutRelease(BindGroupLayout); }
 	}
 };
 
@@ -93,6 +110,18 @@ public:
 
 	explicit FDawnBuffer(const FRHIBufferCreateDesc& CreateDesc) : FRHIBuffer(CreateDesc) {}
 	~FDawnBuffer()
+	{
+		if (Buffer) { wgpuBufferRelease(Buffer); }
+	}
+};
+
+class FDawnUniformBuffer : public FRHIUniformBuffer
+{
+public:
+	WGPUBuffer Buffer = nullptr;
+
+	explicit FDawnUniformBuffer(const FRHIUniformBufferLayout* InLayout) : FRHIUniformBuffer(InLayout) {}
+	~FDawnUniformBuffer()
 	{
 		if (Buffer) { wgpuBufferRelease(Buffer); }
 	}
@@ -136,5 +165,59 @@ inline WGPUVertexFormat DawnVertexFormatFromElementType(EVertexElementType Type)
 	case VET_Float3: return WGPUVertexFormat_Float32x3;
 	case VET_Float4: return WGPUVertexFormat_Float32x4;
 	default:         return WGPUVertexFormat_Float32x4;
+	}
+}
+
+// Stage 2: the fixed depth-buffer format DawnRHI uses whenever a PSO/render
+// pass asks for depth/stencil. Narrow on purpose (no stencil-capable variant
+// selection yet) — broadened alongside real content needs.
+inline WGPUTextureFormat DawnDepthStencilFormat()
+{
+	return WGPUTextureFormat_Depth24Plus;
+}
+
+inline WGPUCompareFunction DawnCompareFunctionFromRHI(ECompareFunction Fn)
+{
+	switch (Fn)
+	{
+	case CF_Less:         return WGPUCompareFunction_Less;
+	case CF_LessEqual:    return WGPUCompareFunction_LessEqual;
+	case CF_Greater:      return WGPUCompareFunction_Greater;
+	case CF_GreaterEqual: return WGPUCompareFunction_GreaterEqual;
+	case CF_Equal:        return WGPUCompareFunction_Equal;
+	case CF_NotEqual:     return WGPUCompareFunction_NotEqual;
+	case CF_Never:        return WGPUCompareFunction_Never;
+	case CF_Always:       return WGPUCompareFunction_Always;
+	default:              return WGPUCompareFunction_Always;
+	}
+}
+
+inline WGPUFilterMode DawnFilterModeFromRHI(ESamplerFilter Filter)
+{
+	switch (Filter)
+	{
+	case SF_Point:              return WGPUFilterMode_Nearest;
+	default:                    return WGPUFilterMode_Linear; // Bilinear/Trilinear/Anisotropic*
+	}
+}
+
+inline WGPUMipmapFilterMode DawnMipFilterModeFromRHI(ESamplerFilter Filter)
+{
+	switch (Filter)
+	{
+	case SF_Point:  return WGPUMipmapFilterMode_Nearest;
+	default:        return WGPUMipmapFilterMode_Linear;
+	}
+}
+
+inline WGPUAddressMode DawnAddressModeFromRHI(ESamplerAddressMode Mode)
+{
+	switch (Mode)
+	{
+	case AM_Wrap:   return WGPUAddressMode_Repeat;
+	case AM_Clamp:  return WGPUAddressMode_ClampToEdge;
+	case AM_Mirror: return WGPUAddressMode_MirrorRepeat;
+	case AM_Border: return WGPUAddressMode_ClampToEdge; // Dawn has no border-color address mode
+	default:        return WGPUAddressMode_ClampToEdge;
 	}
 }

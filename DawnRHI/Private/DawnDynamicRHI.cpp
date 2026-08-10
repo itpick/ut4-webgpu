@@ -11,8 +11,9 @@ DEFINE_LOG_CATEGORY(LogDawnRHI);
 // ============================================================================
 struct FDawnTextureInitializerHelper final : public FRHITextureInitializer
 {
-	FDawnTextureInitializerHelper(FRHICommandListBase& RHICmdList, FRHITexture* InTexture, FFinalizeCallback&& InFinalize)
-		: FRHITextureInitializer(RHICmdList, InTexture, nullptr, 0, MoveTemp(InFinalize), FGetSubresourceCallback{})
+	FDawnTextureInitializerHelper(FRHICommandListBase& RHICmdList, FRHITexture* InTexture, FFinalizeCallback&& InFinalize,
+		FGetSubresourceCallback&& InGetSubresource = FGetSubresourceCallback{})
+		: FRHITextureInitializer(RHICmdList, InTexture, nullptr, 0, MoveTemp(InFinalize), MoveTemp(InGetSubresource))
 	{
 	}
 };
@@ -163,7 +164,22 @@ const TCHAR* FDawnDynamicRHI::GetName()
 
 FSamplerStateRHIRef FDawnDynamicRHI::RHICreateSamplerState(const FSamplerStateInitializerRHI& Initializer)
 {
-	return new FDawnSamplerState(Initializer);
+	FDawnSamplerState* State = new FDawnSamplerState(Initializer);
+
+	WGPUSamplerDescriptor Desc = {};
+	Desc.addressModeU = DawnAddressModeFromRHI((ESamplerAddressMode)Initializer.AddressU);
+	Desc.addressModeV = DawnAddressModeFromRHI((ESamplerAddressMode)Initializer.AddressV);
+	Desc.addressModeW = DawnAddressModeFromRHI((ESamplerAddressMode)Initializer.AddressW);
+	Desc.magFilter = DawnFilterModeFromRHI(Initializer.Filter);
+	Desc.minFilter = DawnFilterModeFromRHI(Initializer.Filter);
+	Desc.mipmapFilter = DawnMipFilterModeFromRHI(Initializer.Filter);
+	Desc.lodMinClamp = Initializer.MinMipLevel;
+	Desc.lodMaxClamp = Initializer.MaxMipLevel;
+	Desc.maxAnisotropy = (uint16)FMath::Max(1, Initializer.MaxAnisotropy);
+
+	State->Sampler = wgpuDeviceCreateSampler(Device, &Desc);
+	checkf(State->Sampler, TEXT("DawnRHI: sampler creation failed"));
+	return State;
 }
 
 FRasterizerStateRHIRef FDawnDynamicRHI::RHICreateRasterizerState(const FRasterizerStateInitializerRHI& Initializer)
@@ -266,7 +282,47 @@ FGraphicsPipelineStateRHIRef FDawnDynamicRHI::RHICreateGraphicsPipelineState(con
 	FragState.targetCount = 1;
 	FragState.targets = &ColorTarget;
 
+	// Stage 2: fixed @group(0) layout — binding 0 = uniform buffer,
+	// binding 1 = texture, binding 2 = sampler. See the NOTE on
+	// FDawnGraphicsPipelineState::BindGroupLayout in DawnResources.h.
+	WGPUBindGroupLayoutEntry LayoutEntries[3] = {};
+	LayoutEntries[0].binding = 0;
+	LayoutEntries[0].visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
+	LayoutEntries[0].buffer.type = WGPUBufferBindingType_Uniform;
+	LayoutEntries[1].binding = 1;
+	LayoutEntries[1].visibility = WGPUShaderStage_Fragment;
+	LayoutEntries[1].texture.sampleType = WGPUTextureSampleType_Float;
+	LayoutEntries[1].texture.viewDimension = WGPUTextureViewDimension_2D;
+	LayoutEntries[2].binding = 2;
+	LayoutEntries[2].visibility = WGPUShaderStage_Fragment;
+	LayoutEntries[2].sampler.type = WGPUSamplerBindingType_Filtering;
+
+	WGPUBindGroupLayoutDescriptor BglDesc = {};
+	BglDesc.entryCount = 3;
+	BglDesc.entries = LayoutEntries;
+	WGPUBindGroupLayout BindGroupLayout = wgpuDeviceCreateBindGroupLayout(Device, &BglDesc);
+
+	WGPUPipelineLayoutDescriptor PlDesc = {};
+	PlDesc.bindGroupLayoutCount = 1;
+	PlDesc.bindGroupLayouts = &BindGroupLayout;
+	WGPUPipelineLayout PipelineLayout = wgpuDeviceCreatePipelineLayout(Device, &PlDesc);
+
+	WGPUDepthStencilState DepthStencil = {};
+	bool bHasDepth = Initializer.DepthStencilTargetFormat != PF_Unknown;
+	if (bHasDepth)
+	{
+		FDawnDepthStencilState* DSState = static_cast<FDawnDepthStencilState*>(Initializer.DepthStencilState);
+		DepthStencil.format = DawnDepthStencilFormat();
+		DepthStencil.depthWriteEnabled = DSState ? (DSState->Initializer.bEnableDepthWrite ? WGPUOptionalBool_True : WGPUOptionalBool_False) : WGPUOptionalBool_True;
+		DepthStencil.depthCompare = DSState ? DawnCompareFunctionFromRHI(DSState->Initializer.DepthTest) : WGPUCompareFunction_LessEqual;
+		DepthStencil.stencilFront.compare = WGPUCompareFunction_Always;
+		DepthStencil.stencilBack.compare = WGPUCompareFunction_Always;
+		DepthStencil.stencilReadMask = 0xFF;
+		DepthStencil.stencilWriteMask = 0xFF;
+	}
+
 	WGPURenderPipelineDescriptor PipeDesc = {};
+	PipeDesc.layout = PipelineLayout;
 	PipeDesc.vertex.module = VS->ShaderModule;
 	auto VsEntry = StringCast<UTF8CHAR>(FDawnVertexShader::EntryPoint);
 	PipeDesc.vertex.entryPoint = { reinterpret_cast<const char*>(VsEntry.Get()), WGPU_STRLEN };
@@ -279,6 +335,10 @@ FGraphicsPipelineStateRHIRef FDawnDynamicRHI::RHICreateGraphicsPipelineState(con
 	PipeDesc.multisample.count = 1;
 	PipeDesc.multisample.mask = 0xFFFFFFFF;
 	PipeDesc.fragment = &FragState;
+	if (bHasDepth)
+	{
+		PipeDesc.depthStencil = &DepthStencil;
+	}
 
 	WGPURenderPipeline Pipeline = wgpuDeviceCreateRenderPipeline(Device, &PipeDesc);
 	checkf(Pipeline, TEXT("DawnRHI: render pipeline creation failed"));
@@ -287,6 +347,8 @@ FGraphicsPipelineStateRHIRef FDawnDynamicRHI::RHICreateGraphicsPipelineState(con
 	PSO->Pipeline = Pipeline;
 	PSO->VertexShader = VS;
 	PSO->PixelShader = PS;
+	PSO->BindGroupLayout = BindGroupLayout;
+	PSO->PipelineLayout = PipelineLayout;
 	return PSO;
 }
 
@@ -340,7 +402,13 @@ FRHITextureInitializer FDawnDynamicRHI::RHICreateTextureInitializer(FRHICommandL
 
 	TRefCountPtr<FDawnTexture> NewTexture = new FDawnTexture(CreateDesc);
 
+	const bool bIsDepthStencil = EnumHasAnyFlags(CreateDesc.Flags, ETextureCreateFlags::DepthStencilTargetable);
+
 	WGPUTextureUsage Usage = WGPUTextureUsage_CopySrc | WGPUTextureUsage_CopyDst;
+	if (bIsDepthStencil)
+	{
+		Usage |= WGPUTextureUsage_RenderAttachment;
+	}
 	if (EnumHasAnyFlags(CreateDesc.Flags, ETextureCreateFlags::RenderTargetable))
 	{
 		Usage |= WGPUTextureUsage_RenderAttachment;
@@ -349,15 +417,12 @@ FRHITextureInitializer FDawnDynamicRHI::RHICreateTextureInitializer(FRHICommandL
 	{
 		Usage |= WGPUTextureUsage_TextureBinding;
 	}
-	// Stage 1 always allows RenderAttachment: the only texture our test
-	// program creates is the offscreen colour target.
-	Usage |= WGPUTextureUsage_RenderAttachment;
 
 	WGPUTextureDescriptor TexDesc = {};
 	TexDesc.usage = Usage;
 	TexDesc.dimension = WGPUTextureDimension_2D;
 	TexDesc.size = { (uint32)CreateDesc.Extent.X, (uint32)CreateDesc.Extent.Y, 1 };
-	TexDesc.format = DawnTextureFormatFromPixelFormat(CreateDesc.Format);
+	TexDesc.format = bIsDepthStencil ? DawnDepthStencilFormat() : DawnTextureFormatFromPixelFormat(CreateDesc.Format);
 	TexDesc.mipLevelCount = 1;
 	TexDesc.sampleCount = 1;
 
@@ -366,11 +431,46 @@ FRHITextureInitializer FDawnDynamicRHI::RHICreateTextureInitializer(FRHICommandL
 	NewTexture->Texture = Texture;
 	NewTexture->View = wgpuTextureCreateView(Texture, nullptr);
 
-	// See the matching NOTE in RHICreateBufferInitializer above.
+	// Initial pixel data (Stage 2: sampled textures, e.g. a material/UI
+	// texture). GetSubresourceCallback hands the caller a CPU-side staging
+	// buffer to WriteData() into; FinalizeCallback uploads it via
+	// wgpuQueueWriteTexture and frees the staging memory. WebGPU has no
+	// buffer-style mappedAtCreation for textures, so this (rather than the
+	// buffer path's direct-mapped-pointer trick) is the correct shape here.
+	const uint32 Width = (uint32)CreateDesc.Extent.X;
+	const uint32 Height = (uint32)CreateDesc.Extent.Y;
+	const uint32 BytesPerPixel = 4; // Stage 2 only handles 4-byte formats (RGBA8/BGRA8).
+	const uint64 StagingSize = (uint64)Width * Height * BytesPerPixel;
+	TSharedPtr<TArray<uint8>> Staging = MakeShared<TArray<uint8>>();
+
+	// NOTE: same protected-typedef situation as FFinalizeCallback above —
+	// FGetSubresourceCallback can't be named from this (non-derived)
+	// function, so both lambdas below are passed as bare arguments rather
+	// than assigned to a named variable of that type first.
+	WGPUQueue QueueCopy = Queue;
 	return FDawnTextureInitializerHelper(RHICmdList, NewTexture.GetReference(),
-		[NewTexture](FRHICommandListBase&) mutable -> FTextureRHIRef
+		[NewTexture, Staging, Width, Height, BytesPerPixel, QueueCopy](FRHICommandListBase&) mutable -> FTextureRHIRef
 		{
+			if (Staging->Num() > 0)
+			{
+				WGPUTexelCopyTextureInfo Dst = {};
+				Dst.texture = NewTexture->Texture;
+				WGPUTexelCopyBufferLayout Layout = {};
+				Layout.bytesPerRow = Width * BytesPerPixel;
+				Layout.rowsPerImage = Height;
+				WGPUExtent3D Size = { Width, Height, 1 };
+				wgpuQueueWriteTexture(QueueCopy, &Dst, Staging->GetData(), Staging->Num(), &Layout, &Size);
+			}
 			return FTextureRHIRef(NewTexture);
+		},
+		[Staging, StagingSize, Width, BytesPerPixel](FRHITextureInitializer::FSubresourceIndex) -> FRHITextureSubresourceInitializer
+		{
+			Staging->SetNumUninitialized((int64)StagingSize);
+			FRHITextureSubresourceInitializer SubresourceInit;
+			SubresourceInit.Data = Staging->GetData();
+			SubresourceInit.Size = StagingSize;
+			SubresourceInit.Stride = (uint64)Width * BytesPerPixel;
+			return SubresourceInit;
 		});
 }
 
@@ -530,8 +630,24 @@ FComputePipelineStateRHIRef FDawnDynamicRHI::RHICreateComputePipelineState(const
 
 FUniformBufferRHIRef FDawnDynamicRHI::RHICreateUniformBuffer(const void* Contents, const FRHIUniformBufferLayout* Layout, EUniformBufferUsage Usage, EUniformBufferValidation Validation)
 {
-	checkNoEntry();
-	return {};
+	FDawnUniformBuffer* UB = new FDawnUniformBuffer(Layout);
+
+	// WebGPU buffers must be a multiple of 4 bytes for wgpuQueueWriteBuffer;
+	// UE's constant buffers are already 16-byte aligned in practice, but
+	// round up defensively.
+	const uint32 Size = Align(FMath::Max<uint32>(Layout->ConstantBufferSize, 4), 4);
+
+	WGPUBufferDescriptor BufDesc = {};
+	BufDesc.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
+	BufDesc.size = Size;
+	UB->Buffer = wgpuDeviceCreateBuffer(Device, &BufDesc);
+	checkf(UB->Buffer, TEXT("DawnRHI: uniform buffer creation failed"));
+
+	if (Contents && Layout->ConstantBufferSize > 0)
+	{
+		wgpuQueueWriteBuffer(Queue, UB->Buffer, 0, Contents, Layout->ConstantBufferSize);
+	}
+	return UB;
 }
 
 void FDawnDynamicRHI::RHIUpdateUniformBuffer(FRHICommandListBase& RHICmdList, FRHIUniformBuffer* UniformBufferRHI, const void* Contents)
