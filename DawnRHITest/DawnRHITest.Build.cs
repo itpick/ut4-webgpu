@@ -22,5 +22,11 @@ public class DawnRHITest : ModuleRules
 		// dynamically by name at runtime, the same way engine RHI selection
 		// does for Vulkan/D3D/etc.).
 		DynamicallyLoadedModuleNames.Add("DawnRHI");
+
+		// Stage 2 shader-cook-path probe: Epic's own standard (open,
+		// non-SimplyStream) ThirdParty HLSL->SPIR-V compiler, already
+		// vendored under Engine/Source/ThirdParty/ShaderConductor with a
+		// prebuilt Linux .so.
+		AddEngineThirdPartyPrivateStaticDependencies(Target, "ShaderConductor");
 	}
 }

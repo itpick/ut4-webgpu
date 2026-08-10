@@ -18,6 +18,12 @@
 #include "Modules/ModuleManager.h"
 #include "HAL/PlatformFileManager.h"
 #include "Misc/FileHelper.h"
+#include "Misc/Parse.h"
+#include "Misc/CommandLine.h"
+
+THIRD_PARTY_INCLUDES_START
+#include <ShaderConductor/ShaderConductor.hpp>
+THIRD_PARTY_INCLUDES_END
 
 IMPLEMENT_APPLICATION(DawnRHITest, "DawnRHITest");
 
@@ -74,8 +80,74 @@ static TArray<uint8> StringToUtf8Bytes(const TCHAR* Str)
 	return Bytes;
 }
 
+// Stage 2 shader-cook-path probe #1: does Epic's own ShaderConductor
+// (HLSL -> SPIR-V, standard open ThirdParty, prebuilt Linux .so) work when
+// built/linked through UBT's own toolchain?
+//
+// STATUS: reproducibly crashes (SIGSEGV, heap corruption) inside
+// SPIRV-Tools' internal passes — InlineExhaustivePass when optimizations
+// are enabled, spirvToolsTrimCapabilities (a *mandatory* legalization pass,
+// unaffected by Options::disableOptimizations) otherwise. Confirmed NOT
+// caused by: (a) ad-hoc/wrong toolchain — rebuilt through UBT's own
+// v26_clang-20.1.8-rockylinux8 toolchain, the exact one embedded in the
+// vendored .so's own debug symbols; (b) shader content — a maximally
+// trivial passthrough shader (no cbuffer, no struct) crashes identically;
+// (c) UE's Mimalloc allocator override — crashes identically with
+// `-ansimalloc`. The HLSL Clang-based frontend + SPIR-V emission genuinely
+// run first (real progress), so this isn't a link/load failure.
+//
+// Best remaining hypothesis: Epic normally hosts this exact fragile
+// DXC/SPIRV-Tools stack only inside the dedicated, specially-configured
+// ShaderCompileWorker process (isolated per-shader subprocess, specific
+// build flags) — never called in-process from an arbitrary minimal
+// program the way this probe does. Untested next step: replicate that
+// process-isolation model (or ShaderCompileWorker's exact Target.cs
+// flags) rather than calling ShaderConductor in-process here. Disabled
+// by default (guarded behind -testshaderconductor) so it doesn't block
+// the working DawnRHI scene render below.
+static void ShaderConductorSmokeTest()
+{
+	using namespace ShaderConductor;
+	static const char* kHLSL = R"(
+float4 vs_main(float3 inPos : POSITION) : SV_Position {
+  return float4(inPos, 1.0);
+}
+)";
+	Compiler::SourceDesc Source = {};
+	Source.source = kHLSL;
+	Source.fileName = "probe.hlsl";
+	Source.entryPoint = "vs_main";
+	Source.stage = ShaderStage::VertexShader;
+
+	Compiler::Options Options = {};
+	Options.disableOptimizations = true; // see DAWNRHI_README / commit log: SPIRV-Tools optimizer crashes in this environment
+	Compiler::TargetDesc Target = {};
+	Target.language = ShadingLanguage::SpirV;
+
+	Compiler::ResultDesc Result = Compiler::Compile(Source, Options, Target);
+	if (Result.hasError)
+	{
+		const char* Msg = reinterpret_cast<const char*>(Result.errorWarningMsg.Data());
+		UE_LOG(LogDawnRHITest, Error, TEXT("ShaderConductor error: %s"), ANSI_TO_TCHAR(Msg));
+		return;
+	}
+	UE_LOG(LogDawnRHITest, Log, TEXT("ShaderConductor SUCCESS: HLSL -> SPIR-V, %u bytes"), (uint32)Result.target.Size());
+	const uint32* Words = reinterpret_cast<const uint32*>(Result.target.Data());
+	UE_LOG(LogDawnRHITest, Log, TEXT("SPIR-V magic = 0x%08x (expect 0x07230203)"), Words[0]);
+
+	TArray<uint8> SpirvBytes;
+	SpirvBytes.Append(reinterpret_cast<const uint8*>(Result.target.Data()), Result.target.Size());
+	FFileHelper::SaveArrayToFile(SpirvBytes, TEXT("/tmp/dawnrhi_sc_probe_vs.spv"));
+	UE_LOG(LogDawnRHITest, Log, TEXT("Wrote /tmp/dawnrhi_sc_probe_vs.spv"));
+}
+
 int RunDawnRHITest()
 {
+	if (FParse::Param(FCommandLine::Get(), TEXT("testshaderconductor")))
+	{
+		ShaderConductorSmokeTest();
+	}
+
 	IDynamicRHIModule* RHIModule = &FModuleManager::LoadModuleChecked<IDynamicRHIModule>(TEXT("DawnRHI"));
 	checkf(RHIModule->IsSupported(), TEXT("DawnRHI: not supported on this platform"));
 
