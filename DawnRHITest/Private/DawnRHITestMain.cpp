@@ -44,33 +44,89 @@ public:
 
 // Stage 2 binding convention (see FDawnGraphicsPipelineState::BindGroupLayout):
 // @group(0) @binding(0) uniform MVP buffer, @binding(1) texture, @binding(2) sampler.
+//
+// MILESTONE: this WGSL is no longer hand-authored -- it is the verbatim
+// output of our own clean-path cook tool (tools/hlsl_to_wgsl.cpp in the
+// itpick/ut4-webgpu repo) run on real HLSL source (see the comment above
+// each shader below), through: Epic's open ShaderConductor (HLSL->SPIR-V,
+// via FDawnShaderConductorLoader's dlopen/RTLD_DEEPBIND isolation) ->
+// Google's open SPIRV-Tools Optimizer (RegisterLegalizationPasses() +
+// CreateStripReflectInfoPass(), self-built -- see HANDOFF.md "Tint wall"
+// for why self-built, not the vendored prebuilt libSPIRV-Tools.a/libtint.a)
+// -> Google's open Tint IR reader/writer (tint::spirv::reader::ReadIR ->
+// tint::wgsl::writer::WgslFromIR, also self-built). Not SimplyStream code
+// anywhere in this chain. Never hand-edited after cooking.
+//
+// Cooked from (Engine-external, see tools/ in the repo for the exact
+// files/commands):
+//   struct Uniforms { float4x4 mvp; };
+//   [[vk::binding(0, 0)]] ConstantBuffer<Uniforms> uniforms : register(b0);
+//   struct VSOut { float4 pos : SV_Position; float2 uv : TEXCOORD0; };
+//   VSOut vs_main(float3 inPos : POSITION, float2 inUV : TEXCOORD0) {
+//     VSOut o;
+//     o.pos = mul(uniforms.mvp, float4(inPos, 1.0));
+//     o.uv = inUV;
+//     return o;
+//   }
+//
+// NOTE: the cooked shader computes `vec4(pos,1) * uniforms.mvp` (vector *
+// matrix -- WGSL's vector-matrix multiply, result[c] = dot(v, column_c(M)))
+// rather than the hand-authored version's `uniforms.mvp * vec4(pos,1)`
+// (matrix * vector). Both are valid HLSL->SPIR-V->WGSL translations of
+// `mul(M,v)` (this is ShaderConductor's default `packMatricesInRowMajor`
+// behaviour) -- they just require a TRANSPOSED CPU-side uniform buffer to
+// produce the same on-screen transform; see FUniforms below.
 static const TCHAR* GVertexWGSL = TEXT(R"(
-struct Uniforms {
+struct S {
   mvp : mat4x4<f32>,
-};
-@group(0) @binding(0) var<uniform> uniforms : Uniforms;
+}
 
-struct VSOut {
-  @builtin(position) pos : vec4<f32>,
-  @location(0) uv : vec2<f32>,
-};
+@group(0u) @binding(0u) var<uniform> uniforms : S;
+
+var<private> v : vec4<f32>;
+
+var<private> v_1 : vec2<f32>;
+
+fn vs_main_inner(v_2 : vec3<f32>, v_3 : vec2<f32>) {
+  v = (vec4<f32>(v_2.x, v_2.y, v_2.z, 1.0f) * uniforms.mvp);
+  v_1 = v_3;
+}
+
+struct tint_symbol_1 {
+  @builtin(position) @invariant
+  tint_symbol : vec4<f32>,
+  @location(0u)
+  m : vec2<f32>,
+}
 
 @vertex
-fn vs_main(@location(0) inPos : vec3<f32>, @location(1) inUV : vec2<f32>) -> VSOut {
-  var out : VSOut;
-  out.pos = uniforms.mvp * vec4<f32>(inPos, 1.0);
-  out.uv = inUV;
-  return out;
+fn vs_main(@location(0u) v_4 : vec3<f32>, @location(1u) v_5 : vec2<f32>) -> tint_symbol_1 {
+  vs_main_inner(v_4, v_5);
+  return tint_symbol_1(v, v_1);
 }
 )");
 
+// Cooked from:
+//   [[vk::binding(1, 0)]] Texture2D tex : register(t0);
+//   [[vk::binding(2, 0)]] SamplerState samp : register(s0);
+//   float4 fs_main(float2 uv : TEXCOORD0) : SV_Target {
+//     return tex.Sample(samp, uv);
+//   }
 static const TCHAR* GPixelWGSL = TEXT(R"(
-@group(0) @binding(1) var tex : texture_2d<f32>;
-@group(0) @binding(2) var samp : sampler;
+@group(0u) @binding(1u) var tex : texture_2d<f32>;
+
+@group(0u) @binding(2u) var samp : sampler;
+
+var<private> v : vec4<f32>;
+
+fn fs_main_inner(v_1 : vec2<f32>) {
+  v = textureSample(tex, samp, v_1);
+}
 
 @fragment
-fn fs_main(@location(0) uv : vec2<f32>) -> @location(0) vec4<f32> {
-  return textureSample(tex, samp, uv);
+fn fs_main(@location(0u) v_2 : vec2<f32>) -> @location(0u) vec4<f32> {
+  fs_main_inner(v_2);
+  return v;
 }
 )");
 
@@ -227,14 +283,26 @@ int RunDawnRHITest()
 	FTextureRHIRef CheckerTexture = TexInit2D.Finalize();
 
 	// --- Uniform buffer: MVP = uniform scale 0.7 + translate (0.2, -0.1) ---
-	// Column-major, matching WGSL's mat4x4<f32> layout, so `mvp * vec4(pos,1)`
-	// applies scale to x/y/z and adds the translation from column 3.
+	// Storage is still column-major (WGSL's fixed mat4x4<f32> host-shareable
+	// layout: Mvp[0..3]=column0, [4..7]=column1, [8..11]=column2,
+	// [12..15]=column3 -- this is NOT affected by shader source order, it's
+	// the WGSL memory layout spec). What DOES change with the cooked
+	// vertex shader (see GVertexWGSL above) is that it computes
+	// `vec4(pos,1) * uniforms.mvp` (vector * matrix: per the WGSL spec,
+	// result[c] = dot(v, column_c(M))) instead of the old hand-authored
+	// `uniforms.mvp * vec4(pos,1)` (matrix * vector: result = sum_c
+	// v[c]*column_c(M)). Those two are transposes of each other, so to get
+	// the identical on-screen transform (scale 0.7, translate (0.2,-0.1))
+	// this buffer is the TRANSPOSE of the original: the translation moves
+	// from column 3's (x,y,z) into the 4th (w) component of columns 0/1
+	// (Mvp[3]/Mvp[7]) instead -- worked out from the WGSL vector*matrix
+	// definition, not guessed; verified against the actual PNG readback.
 	struct FUniforms { float Mvp[16]; };
 	FUniforms Uniforms = {};
-	Uniforms.Mvp[0] = 0.7f;  Uniforms.Mvp[1] = 0.0f;  Uniforms.Mvp[2]  = 0.0f; Uniforms.Mvp[3]  = 0.0f;
-	Uniforms.Mvp[4] = 0.0f;  Uniforms.Mvp[5] = 0.7f;  Uniforms.Mvp[6]  = 0.0f; Uniforms.Mvp[7]  = 0.0f;
+	Uniforms.Mvp[0] = 0.7f;  Uniforms.Mvp[1] = 0.0f;  Uniforms.Mvp[2]  = 0.0f; Uniforms.Mvp[3]  = 0.2f;
+	Uniforms.Mvp[4] = 0.0f;  Uniforms.Mvp[5] = 0.7f;  Uniforms.Mvp[6]  = 0.0f; Uniforms.Mvp[7]  = -0.1f;
 	Uniforms.Mvp[8] = 0.0f;  Uniforms.Mvp[9] = 0.0f;  Uniforms.Mvp[10] = 0.7f; Uniforms.Mvp[11] = 0.0f;
-	Uniforms.Mvp[12] = 0.2f; Uniforms.Mvp[13] = -0.1f; Uniforms.Mvp[14] = 0.0f; Uniforms.Mvp[15] = 1.0f;
+	Uniforms.Mvp[12] = 0.0f; Uniforms.Mvp[13] = 0.0f;  Uniforms.Mvp[14] = 0.0f; Uniforms.Mvp[15] = 1.0f;
 
 	FRHIUniformBufferLayoutInitializer LayoutInit(TEXT("DawnRHITestUniforms"), sizeof(FUniforms));
 	TRefCountPtr<FRHIUniformBufferLayout> UBLayout = new FRHIUniformBufferLayout(LayoutInit);

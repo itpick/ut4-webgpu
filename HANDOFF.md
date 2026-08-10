@@ -8,17 +8,26 @@ checkout, licensed source — only OUR new files are pushed to the public
 remote: `Engine/Source/Runtime/DawnRHI/`, `Engine/Source/Programs/DawnRHITest/`,
 `Engine/Source/Programs/DawnRHIWasmProbe/`).
 
-## Current state: WORKING
+## Current state: MILESTONE HIT — real cooked HLSL shaders render through DawnRHI
 
 `DawnRHITest` renders a scaled+translated, checkerboard-textured,
 depth-tested quad through the real `FDawnDynamicRHI`/`FDawnCommandContext`
-(not standalone Dawn calls) and reads it back to a PNG. Confirmed correct
-pixel value and confirmed visually (checkerboard, shifted/scaled per the
-uniform-buffer MVP). Shaders are still **hand-authored WGSL** — the
-HLSL→SPIR-V→WGSL cook path is not wired in yet (see wall below).
+(not standalone Dawn calls) and reads it back to a PNG. **The vertex and
+pixel shaders are no longer hand-authored WGSL** — `GVertexWGSL`/
+`GPixelWGSL` in `DawnRHITestMain.cpp` are now the verbatim output of our
+own clean-path HLSL→SPIR-V→WGSL cook tool (`tools/hlsl_to_wgsl.cpp`),
+run on real HLSL source (`tools/shaders/scene_vs.hlsl`/`scene_ps.hlsl`)
+through: Epic's open ShaderConductor → Google's open SPIRV-Tools
+Optimizer (legalize + strip-reflect) → Google's open Tint IR reader/
+writer — see "Shader-cook path" below for the full chain and the two
+walls that had to be broken to get here. Rendering this cooked-shader
+scene through the real RHI reads back **the identical
+`Center pixel = (30,60,200,255)`** as the old hand-authored-WGSL
+baseline, and the same checkerboard-quad image, confirming the cook path
+produces a correct, working shader end-to-end — not just "compiles."
 
 Latest readback: `/tmp/dawnrhi_scene2.ppm` on framepick (also pulled to
-`/private/tmp/claude-501/-Volumes-UE58Mac-UnrealEngine/b50d03a5-f4df-4824-bc6c-73419bba0ee9/scratchpad/dawnrhi/dawnrhi_scene2_final.png`
+`/private/tmp/claude-501/-Volumes-UE58Mac-UnrealEngine/b50d03a5-f4df-4824-bc6c-73419bba0ee9/scratchpad/dawnrhi_scene2_cooked.png`
 in this session's scratchpad — copy it out before it's cleaned up).
 
 ## Build & run (exact commands)
@@ -209,7 +218,7 @@ still succeeding (`SUCCESS`, `Center pixel = (30,60,200,255)` — unchanged
 from before). Run recipe unchanged (see above); add
 `-testshaderconductor`.
 
-## Tint (SPIR-V→WGSL): headers fetched + linked successfully, NEW wall found
+## Tint (SPIR-V→WGSL): wall #2 (vendored libtint.a ABI mismatch) FOUND AND FIXED
 
 **Version pin found and headers fetched.** `Dawn/include/dawn/common/Version_autogen.h`'s
 `kDawnVersion` gives the exact Dawn/Tint revision the vendored
@@ -286,56 +295,109 @@ in-memory discriminant/storage being in a state neither our compiled
   there's no duplicate-definition ambiguity for the linker to resolve
   wrong; it's a real, singular dependency, not a collision.
 
-**Leading hypothesis, untested:** an ABI/layout mismatch between the
-pristine fetched headers (exact pinned commit, no additional patches
-found beyond the one documented finite-clamp patch) and whatever the
-*actual* build configuration was that produced the vendored `libtint.a`
-— e.g. a conditionally-compiled member of `core::ir::Module` or `Result<>`
-gated on a CMake option we don't know was on/off
-(`TINT_BUILD_IR_BINARY`, `TINT_ENABLE_IR_VALIDATION`, `NDEBUG`, etc.),
-silently changing struct layout even though the header *text* is
-identical and every function's mangled name/signature matches (name
-mangling doesn't encode private-member layout, so this kind of mismatch
-is exactly the "guessing the ABI risks silent corruption" case the
-project constraints already warned about — except here we used the real
-headers, not a guess, and it still doesn't line up).
+### Root cause, found and fixed: the vendored prebuilt `libtint.a` is ABI-mismatched
 
-**Next steps for a fresh agent, in order of effort:**
-1. **Build `libtint.a` ourselves** from the exact same fetched pristine
-   source (already sitting at `/tmp/tint-src-fetch/dawn` on framepick,
-   commit `3c82ef2b508a29f96ac31731d27dffb86f39efd0`, submodules fetched)
-   via its CMake build (`-DDAWN_ENABLE_VULKAN=OFF -DTINT_BUILD_SPV_READER=ON
-   -DTINT_BUILD_WGSL_WRITER=ON -DTINT_BUILD_IR_BINARY=OFF
-   -DDAWN_BUILD_PROTOBUF=OFF -DTINT_BUILD_TESTS=OFF -DDAWN_BUILD_TESTS=OFF
-   -DDAWN_BUILD_SAMPLES=OFF`, may need more flags/deps ironed out — not
-   yet attempted, time-boxed out this session). If a self-built
-   `libtint.a` makes `tint_probe` work cleanly, that confirms the
-   vendored prebuilt binary itself is the mismatched piece, and DawnRHI
-   should switch to a self-built Tint (still 100% clean-path — Tint is
-   Google's open source, building it ourselves is if anything *more*
-   independent from SimplyStream's vendor tree than before).
-2. If self-built Tint reproduces the same crash, this is either a genuine
-   upstream Tint bug at this exact revision, or something wrong in the
-   calling convention/build flags for `tint_probe.cpp` itself — dig into
-   `ReadIR`'s implementation (`src/tint/lang/spirv/reader/reader.cc`,
-   fetched and available) directly to find exactly which internal
-   `Result<>` gets misconstructed, rather than treating it as a black box.
-3. Once WGSL is producible: compile the *actual* vertex/pixel HLSL
-   sources (mirroring `GVertexWGSL`/`GPixelWGSL` in `DawnRHITestMain.cpp`)
-   through `FDawnShaderConductorLoader` + the Tint reader/writer, then
-   swap them into the DawnRHI scene test's `RHICreateVertexShader`/
-   `RHICreatePixelShader` calls, replacing the hand-authored WGSL — that's
-   the milestone. Will need cbuffer/texture/sampler HLSL→SPIR-V binding
-   reflection to match DawnRHI's fixed `@group(0){UB@0,Tex@1,Sampler@2}`
-   convention.
-4. Promote `FDawnShaderConductorLoader` (and the eventual Tint wrapper)
-   from `DawnRHITest` into the `DawnRHI` module proper (as a real
-   cook-time utility / eventual `IShaderFormat`) once the SPIR-V→WGSL leg
-   is wired end-to-end.
+Tested the leading hypothesis directly: built `libtint.a` **ourselves**
+from the exact same pristine fetched source (commit
+`3c82ef2b508a29f96ac31731d27dffb86f39efd0`, no changes) via CMake+Ninja
+(`-DDAWN_ENABLE_VULKAN=OFF -DTINT_BUILD_SPV_READER=ON
+-DTINT_BUILD_WGSL_WRITER=ON` + assorted `-DDAWN_USE_*=OFF`/
+`-DDAWN_ENABLE_*=OFF` to skip everything except Tint itself — full flag
+list in `tools/BUILD_RECIPE.md`), targeting the two specific libs needed
+(`libtint_lang_spirv_reader.a`, `libtint_lang_wgsl_writer.a` — Tint's
+CMake produces ~130 fine-grained per-subdirectory static libs, no single
+combined `libtint.a` target; the vendored one is presumably `ar`-merged
+from all of these by whatever build produced it, and evidently with some
+different flag/config than what we used). Relinked `tint_probe` against
+the self-built libs (`-Wl,--start-group $(find /tmp/tint-build -name
+'*.a') -Wl,--end-group`) — **the crash is completely gone.** `ReadIR` on
+the same minimal `spirv-as`-assembled module that previously crashed with
+`bad_variant_access` now cleanly returns a `Failure()` with a sane,
+readable error message (SPIR-V version 1.6 vs. target env 1.3 — a real,
+expected, easily-fixed input mismatch, not a bug). Reassembled with
+`spirv-as --target-env vulkan1.1` and it succeeds outright, producing
+correct WGSL (`@vertex fn main() -> @builtin(position) vec4<f32> { ... }`).
+**Confirmed**: the vendored prebuilt `libtint.a` under SimplyStream's
+`ThirdParty/Dawn/lib/linux/` is the mismatched piece — not our headers,
+not our calling convention, not a Tint upstream bug. DawnRHI's own
+runtime shader creation (`RHICreateVertexShader`/`RHICreatePixelShader`,
+which parses final WGSL *text* through `wgpuDeviceCreateShaderModule`)
+is unaffected by this — that path goes through `libdawn.a`'s own
+internally-bundled Tint (parsing WGSL, never touching
+`spirv::reader::ReadIR`), a completely different, apparently-fine code
+path from the standalone `libtint.a` we called directly for cooking.
+**Takeaway for future work using this vendored `Dawn/lib/linux/` tree**:
+`libdawn.a` (and thus DawnRHI itself) is fine; the standalone
+`libtint.a`/`libSPIRV-Tools.a` pair is not to be trusted for direct offline
+use — always self-build Tint for cook-time tooling (see
+`tools/BUILD_RECIPE.md`'s self-build recipe).
+
+### The full HLSL→SPIR-V→WGSL cook path now works — milestone achieved
+
+`tools/hlsl_to_wgsl.cpp` chains: real HLSL source → `ShaderConductor::Compiler::Compile`
+(dlopen/`RTLD_DEEPBIND`-isolated per wall #1's fix, `-fspv-target-env=vulkan1.1`)
+→ SPIR-V → `spvtools::Optimizer` (self-built SPIRV-Tools;
+`RegisterLegalizationPasses()` + `CreateStripReflectInfoPass()` — strips
+the `SPV_GOOGLE_hlsl_functionality1` extension ShaderConductor's UE fork
+unconditionally emits via a hardcoded `-fspv-reflect` in
+`ShaderConductor.cpp`, which Tint's reader otherwise cleanly rejects with
+"extension ... is not supported") → `tint::spirv::reader::ReadIR` →
+`tint::wgsl::writer::WgslFromIR` (self-built Tint) → WGSL text.
+
+Ran it on real HLSL matching `DawnRHITest`'s Stage-2 scene shaders
+(`tools/shaders/scene_vs.hlsl`/`scene_ps.hlsl` — MVP-transformed textured
+quad, `[[vk::binding(N,0)]]` attributes to land on DawnRHI's fixed
+`@group(0){0=uniform,1=texture,2=sampler}` convention). Cooked WGSL output
+(`tools/shaders/scene_vs.wgsl`/`scene_ps.wgsl`) is now embedded verbatim
+as `GVertexWGSL`/`GPixelWGSL` in `DawnRHITestMain.cpp`, **replacing the
+old hand-authored WGSL** — that's the stated milestone. One real-world
+wrinkle worth knowing for next time: the cooked vertex shader computes
+`vec4(pos,1) * uniforms.mvp` (WGSL vector-matrix multiply) rather than
+the hand-authored `uniforms.mvp * vec4(pos,1)` (matrix-vector) — an
+artifact of `mul(uniforms.mvp, ...)` + ShaderConductor's default
+`packMatricesInRowMajor=true`. Both are correct HLSL→WGSL translations;
+they just need a **transposed** CPU-side uniform buffer to produce the
+same on-screen transform (worked out from WGSL's `vector*matrix` spec
+definition, not guessed — see the comment above `FUniforms` in
+`DawnRHITestMain.cpp`).
+
+**Verified end-to-end, real UE binary, real GPU (Vulkan via Dawn on
+framepick)**: rendering the scene with the cooked shaders reads back
+`Center pixel = (30,60,200,255)` — bit-for-bit identical to the original
+hand-authored-WGSL baseline — and the same visually-correct
+shifted/scaled checkerboard-textured quad. `SUCCESS` logged; only the
+same pre-existing benign teardown assert follows (see "Build & run"
+above). This is a real HLSL shader, cooked entirely through our own
+clean-path pipeline (Epic's open ShaderConductor + Google's open
+SPIRV-Tools + Google's open Tint — never SimplyStream's WebGPUShaderFormat
+or any hand-authored WGSL for this shader), rendering correctly through
+DawnRHI.
+
+**Next steps for a fresh agent:**
+1. Promote `FDawnShaderConductorLoader` and the SPIRV-Tools-Optimizer +
+   Tint cook steps from the standalone `tools/hlsl_to_wgsl.cpp` into the
+   `DawnRHI` module proper (as a real `IShaderFormat`, or at least a
+   build-time UBT action) so shaders cook automatically instead of via a
+   manually-run offline tool. This needs the self-built Tint/SPIRV-Tools
+   libs (not the vendored ones — see above) wired into UBT, e.g. as a new
+   `DawnRHIShaderCook`-style module/program with its own `Build.cs`
+   pointing `PublicAdditionalLibraries` at a self-built `libtint`
+   (probably worth checking in the self-built `.a`s or scripting the
+   CMake build as a pre-build step).
+2. Extend `hlsl_to_wgsl.cpp`/the eventual `IShaderFormat` to handle more
+   than a single vertex+pixel shader pair: proper resource-binding
+   reflection instead of hand-placed `[[vk::binding]]` attributes (needed
+   once real UT4 shaders — with many more than 3 bindings — are cooked),
+   compute shaders, and hooking up UE's actual shader permutation/
+   preprocessing pipeline (`FShaderCompilerInput` etc.) rather than raw
+   HLSL strings.
+3. Try cooking a real UT4 material/shader (not just the synthetic scene
+   test) through this same path as the next acceptance test.
 
 See `tools/tint_probe.cpp`, `tools/sc_deepbind_probe.cpp`,
-`tools/fetch_tint_deps.sh`, `tools/BUILD_RECIPE.md` in this repo for the
-exact repro code and build commands for everything above.
+`tools/hlsl_to_wgsl.cpp`, `tools/fetch_tint_deps.sh`, `tools/BUILD_RECIPE.md`,
+`tools/shaders/` in this repo for the exact repro code, cook tool, and
+build commands for everything above.
 
 ## Clean-path constraints (unchanged, still holding)
 
