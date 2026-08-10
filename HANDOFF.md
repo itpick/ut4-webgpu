@@ -209,35 +209,133 @@ still succeeding (`SUCCESS`, `Center pixel = (30,60,200,255)` — unchanged
 from before). Run recipe unchanged (see above); add
 `-testshaderconductor`.
 
-**Next steps for a fresh agent:**
-1. Wire Tint (SPIR-V→WGSL) — see the still-open section below; unblocked
-   now that valid, uncorrupted SPIR-V is producible on demand.
-2. Compile the *actual* vertex/pixel HLSL sources (mirroring
-   `GVertexWGSL`/`GPixelWGSL` in `DawnRHITestMain.cpp`) through
-   `FDawnShaderConductorLoader`, not just the trivial passthrough probe
-   shader — will need cbuffer/texture/sampler HLSL→SPIR-V binding
+## Tint (SPIR-V→WGSL): headers fetched + linked successfully, NEW wall found
+
+**Version pin found and headers fetched.** `Dawn/include/dawn/common/Version_autogen.h`'s
+`kDawnVersion` gives the exact Dawn/Tint revision the vendored
+`libtint.a` was built from: **`3c82ef2b508a29f96ac31731d27dffb86f39efd0`**
+(`dawn.googlesource.com/dawn`, dated 2025-09-02). Fetched via a shallow
+`git fetch --depth 1 origin <sha>` (googlesource supports fetch-by-exact-
+commit) — only `src/tint` (28MB) is actually needed, plus three
+submodules at their exact pinned SHAs (read from `.gitmodules`/
+`git ls-tree` gitlinks): `third_party/spirv-headers/src`,
+`third_party/spirv-tools/src`, `third_party/abseil-cpp`. Full recipe +
+scripted fetch in `tools/BUILD_RECIPE.md` / `tools/fetch_tint_deps.sh`
+(repeatable in ~2 minutes, ~90MB total, no auth needed). Only one local
+patch exists in the vendored tree (`Dawn/patches/apply-tint-finite-clamp.py`,
+touches `core::constant::scalar.h` — unrelated to what follows).
+
+**Compiled and linked cleanly against the vendored `libtint.a` first try.**
+`tools/tint_probe.cpp` includes the real fetched headers
+(`src/tint/lang/spirv/reader/reader.h`, `src/tint/lang/wgsl/writer/writer.h`)
+and calls `tint::spirv::reader::ReadIR(spirv, Options) -> Result<core::ir::Module>`
+then `tint::wgsl::writer::WgslFromIR(Module&, Options) -> Result<Output>`
+(the modern IR-based API — NOT `Program`-based; `Output::wgsl` is a plain
+`std::string`). All four target symbols
+(`ReadIR`/`WgslFromIR`/`ProgramFromIR`/`Generate`) match the vendored
+`.a`'s exact mangled names/signatures (confirmed via `nm`). This is a
+single statically-linked binary (`libtint.a`+`libSPIRV-Tools.a` linked
+directly at compile time, `-Wl,--start-group`/`--end-group`) — no shared
+library boundary, so wall #1's DSO symbol-interposition mechanism does
+NOT apply here; it's a genuinely different problem (see below).
+
+**Also found and fixed along the way**: UE's ShaderConductor fork
+hardcodes `-fspv-reflect` unconditionally for all SPIR-V/GLSL/MSL targets
+(`ShaderConductor.cpp` — "UE Change: Specify SPIRV reflection so that we
+retain semantic strings", not something `Options`/`DXCArgs` can turn
+off), which emits the `SPV_GOOGLE_hlsl_functionality1` extension +
+`OpDecorateString ... UserSemantic` reflection decorations into every
+SPIR-V module ShaderConductor produces. Standard fix (used by any
+DXC→Vulkan-SPIR-V consumer): run the SPIR-V through
+`spirv-opt --legalize-hlsl --strip-reflect` before handing it to a
+non-reflection-aware reader. Confirmed this produces valid,
+`spirv-val`-clean, standard Vulkan-flavored SPIR-V — but did NOT fix the
+wall below (same crash with or without it).
+
+**The new wall:** `tint::spirv::reader::ReadIR()` reproducibly throws/
+crashes with `bad_variant_access` on **every** SPIR-V input tried,
+including a minimal hand-assembled (`spirv-as`), `spirv-val`-clean,
+textbook-valid module (`OpCapability Shader` / `OpEntryPoint Vertex` /
+store a constant to `gl_Position` / `OpReturn` — zero DXC or UE-specific
+content whatsoever). `tint::Result<T>` is a
+`std::variant<std::monostate, SUCCESS_TYPE, FAILURE_TYPE>` wrapper
+(`src/tint/utils/result.h`) — `IrResult == tint::Success` correctly
+evaluates to `false` every time (so the variant isn't stuck holding a
+genuinely-successful `Module`), but then `IrResult.Failure()` itself
+(`std::get<Failure>(value)`) either throws `bad_variant_access` (caught)
+or hard-SIGSEGVs (uncaught, before any of our own diagnostic prints even
+run) depending on the exact input — consistent with the variant's
+in-memory discriminant/storage being in a state neither our compiled
+`Failure()` accessor nor `Get()` recognizes as valid.
+
+**Ruled out this session:**
+- Input specificity — fails identically on ShaderConductor's raw DXC
+  output (with the `SPV_GOOGLE_hlsl_functionality1` extension), on the
+  same SPIR-V after `spirv-opt --legalize-hlsl --strip-reflect`, AND on a
+  from-scratch minimal `spirv-as`-assembled module with none of DXC/UE's
+  quirks. All three fail the same way.
+- `Options::allowed_features` defaulting to "nothing allowed" — tried
+  `tint::wgsl::AllowedFeatures::Everything()` explicitly, no change.
+- Wall #1's exact mechanism (DSO symbol interposition) — doesn't apply;
+  this is one statically-linked binary, everything resolved at link time
+  to a single copy of each symbol.
+- A second copy of SPIRV-Tools causing a *link-time* symbol collision —
+  checked via `nm`: `libtint.a` has **zero** of its own `spvtools::`
+  definitions (0 `T` symbols) and 66 **undefined** `spvtools::` references
+  that must come from the separately-linked `libSPIRV-Tools.a` — so
+  there's no duplicate-definition ambiguity for the linker to resolve
+  wrong; it's a real, singular dependency, not a collision.
+
+**Leading hypothesis, untested:** an ABI/layout mismatch between the
+pristine fetched headers (exact pinned commit, no additional patches
+found beyond the one documented finite-clamp patch) and whatever the
+*actual* build configuration was that produced the vendored `libtint.a`
+— e.g. a conditionally-compiled member of `core::ir::Module` or `Result<>`
+gated on a CMake option we don't know was on/off
+(`TINT_BUILD_IR_BINARY`, `TINT_ENABLE_IR_VALIDATION`, `NDEBUG`, etc.),
+silently changing struct layout even though the header *text* is
+identical and every function's mangled name/signature matches (name
+mangling doesn't encode private-member layout, so this kind of mismatch
+is exactly the "guessing the ABI risks silent corruption" case the
+project constraints already warned about — except here we used the real
+headers, not a guess, and it still doesn't line up).
+
+**Next steps for a fresh agent, in order of effort:**
+1. **Build `libtint.a` ourselves** from the exact same fetched pristine
+   source (already sitting at `/tmp/tint-src-fetch/dawn` on framepick,
+   commit `3c82ef2b508a29f96ac31731d27dffb86f39efd0`, submodules fetched)
+   via its CMake build (`-DDAWN_ENABLE_VULKAN=OFF -DTINT_BUILD_SPV_READER=ON
+   -DTINT_BUILD_WGSL_WRITER=ON -DTINT_BUILD_IR_BINARY=OFF
+   -DDAWN_BUILD_PROTOBUF=OFF -DTINT_BUILD_TESTS=OFF -DDAWN_BUILD_TESTS=OFF
+   -DDAWN_BUILD_SAMPLES=OFF`, may need more flags/deps ironed out — not
+   yet attempted, time-boxed out this session). If a self-built
+   `libtint.a` makes `tint_probe` work cleanly, that confirms the
+   vendored prebuilt binary itself is the mismatched piece, and DawnRHI
+   should switch to a self-built Tint (still 100% clean-path — Tint is
+   Google's open source, building it ourselves is if anything *more*
+   independent from SimplyStream's vendor tree than before).
+2. If self-built Tint reproduces the same crash, this is either a genuine
+   upstream Tint bug at this exact revision, or something wrong in the
+   calling convention/build flags for `tint_probe.cpp` itself — dig into
+   `ReadIR`'s implementation (`src/tint/lang/spirv/reader/reader.cc`,
+   fetched and available) directly to find exactly which internal
+   `Result<>` gets misconstructed, rather than treating it as a black box.
+3. Once WGSL is producible: compile the *actual* vertex/pixel HLSL
+   sources (mirroring `GVertexWGSL`/`GPixelWGSL` in `DawnRHITestMain.cpp`)
+   through `FDawnShaderConductorLoader` + the Tint reader/writer, then
+   swap them into the DawnRHI scene test's `RHICreateVertexShader`/
+   `RHICreatePixelShader` calls, replacing the hand-authored WGSL — that's
+   the milestone. Will need cbuffer/texture/sampler HLSL→SPIR-V binding
    reflection to match DawnRHI's fixed `@group(0){UB@0,Tex@1,Sampler@2}`
    convention.
-3. Promote `FDawnShaderConductorLoader` from `DawnRHITest` into the
-   `DawnRHI` module proper (as a real cook-time utility / eventual
-   `IShaderFormat`) once the SPIR-V→WGSL leg is wired.
+4. Promote `FDawnShaderConductorLoader` (and the eventual Tint wrapper)
+   from `DawnRHITest` into the `DawnRHI` module proper (as a real
+   cook-time utility / eventual `IShaderFormat`) once the SPIR-V→WGSL leg
+   is wired end-to-end.
 
-**Tint (SPIR-V→WGSL) not reached yet** — blocked behind the above. But
-worth knowing: `tint::spirv::reader::Parse` and `tint::wgsl::writer::*`
-symbols **are already present and linkable** in the vendored `libtint.a`
-(`Engine/Platforms/SimplyStream/Source/ThirdParty/Dawn/lib/linux/libtint.a`
-— confirmed via `nm`), it's the modern IR-based API
-(`spirv::reader::Parse` → `core::ir::Module` → `wgsl::writer::ProgramFromIR`/
-`WgslFromIR`/`Generate`). The **headers for these specific functions are
-not vendored** in this tree (`Dawn/include/tint/tint.h` just `#include`s
-paths like `src/tint/lang/spirv/reader/reader.h` that don't exist in the
-vendored include dir) — would need fetching matching Tint source headers
-(same revision that built `libtint.a`; no version pin found — check
-`Dawn/include/*.tps` or similar for a hash to fetch from
-`https://dawn.googlesource.com/dawn`). Do NOT hand-declare these types
-from the mangled symbol names alone — they're non-trivial C++ classes
-(`tint::Program`, `core::ir::Module`, etc.) and guessing the ABI risks
-silent corruption exactly like the SPIRV-Tools crash above.
+See `tools/tint_probe.cpp`, `tools/sc_deepbind_probe.cpp`,
+`tools/fetch_tint_deps.sh`, `tools/BUILD_RECIPE.md` in this repo for the
+exact repro code and build commands for everything above.
 
 ## Clean-path constraints (unchanged, still holding)
 
