@@ -43,7 +43,19 @@ public:
 
 	virtual void GetSupportedFormats(TArray<FName>& OutFormats) const override
 	{
+		// Our own native format name.
 		OutFormats.Add(GetDawnWgslShaderFormatName());
+		// Also claim the SimplyStream WebGPU shader-platform format names
+		// (SP_WEBGPU_SM5/ES31 -> SF_WEBGPU_SM5/ES31 in that platform's
+		// DataDrivenPlatformInfo.ini) so a REAL cook for the SimplyStream
+		// target selects THIS open module. The closed WebGPUShaderFormat is
+		// a non-functional source stub on this tree, so there is no conflict.
+		// The compile path keys on shader frequency, not format name, so the
+		// HLSL->SPIR-V->WGSL pipeline is identical regardless of requester.
+		static const FName NAME_SF_WEBGPU_SM5(TEXT("SF_WEBGPU_SM5"));
+		static const FName NAME_SF_WEBGPU_ES31(TEXT("SF_WEBGPU_ES31"));
+		OutFormats.Add(NAME_SF_WEBGPU_SM5);
+		OutFormats.Add(NAME_SF_WEBGPU_ES31);
 	}
 
 	virtual const TCHAR* GetPlatformIncludeDirectory() const override
