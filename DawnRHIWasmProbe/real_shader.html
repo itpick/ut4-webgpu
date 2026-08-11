@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>DawnRHI wasm real-shader probe</title>
+</head>
+<body>
+<h3>DawnRHI Stage 1 / Goal 3 -- real cooked ScreenPassVS/CopyRectPS via wasm + emdawnwebgpu (offscreen readback)</h3>
+<div id="status">loading...</div>
+<script>
+window.__dawnrhiRealShaderDone = function() {
+  document.getElementById('status').textContent = 'DONE (see console for pixel readback).';
+};
+</script>
+<script src="real_shader_wasm.js"></script>
+</body>
+</html>

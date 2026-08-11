@@ -1,0 +1,33 @@
+===== CAPTURED CONSOLE OUTPUT =====
+[console.log] DawnRHI real-shader wasm probe starting (ScreenPassVS/CopyRectPS via emdawnwebgpu)
+[log.error] Failed to load resource: the server responded with a status of 404 (File not found)
+[console.log] Adapter ready, requesting device...
+[console.log] Device ready
+[console.log] Loaded /real/ScreenPassVS.wgsl (1272 bytes)
+[console.log] Loaded /real/CopyRectPS.wgsl (401 bytes)
+[console.log] Loaded /real/ScreenPassVS.wgsl.bindings.txt (44 bytes)
+[console.log] Loaded /real/CopyRectPS.wgsl.bindings.txt (54 bytes)
+[console.log] Loaded 1 VS binding(s), 2 PS binding(s) from real reflection sidecars
+[console.log] Reflected bind indices: DrawRectangleParameters=106 InputTexture=109 InputSampler=110
+[console.log] Real-shader pipeline created OK (reflection-driven bind group layout)
+[console.log] Frame submitted, mapping readback buffer...
+[console.log] Center pixel = (255,200,40,255), corner(4,4) = (255,200,40,255)
+[console.log] row 0: AAAABBBBAAAABBBB
+[console.log] row 1: AAAABBBBAAAABBBB
+[console.log] row 2: AAAABBBBAAAABBBB
+[console.log] row 3: AAAABBBBAAAABBBB
+[console.log] row 4: BBBBAAAABBBBAAAA
+[console.log] row 5: BBBBAAAABBBBAAAA
+[console.log] row 6: BBBBAAAABBBBAAAA
+[console.log] row 7: BBBBAAAABBBBAAAA
+[console.log] row 8: AAAABBBBAAAABBBB
+[console.log] row 9: AAAABBBBAAAABBBB
+[console.log] row 10: AAAABBBBAAAABBBB
+[console.log] row 11: AAAABBBBAAAABBBB
+[console.log] row 12: BBBBAAAABBBBAAAA
+[console.log] row 13: BBBBAAAABBBBAAAA
+[console.log] row 14: BBBBAAAABBBBAAAA
+[console.log] row 15: BBBBAAAABBBBAAAA
+[console.log] Grid sample: A(255,200,40)=128 B(30,60,200)=128 other=0 (16x16=256 total)
+[console.log] SUCCESS: real cooked ScreenPassVS/CopyRectPS shader pair rendered a pixel-exact checkerboard through emdawnwebgpu in-browser (offscreen readback verified)
+===== END (31 messages) =====

@@ -1,4 +1,193 @@
-# DawnRHI handoff — 2026-08-10 (update 5: MILESTONE 2/3 DONE — real SPIR-V reflection wired end-to-end, a real UE shader pair renders through FDawnDynamicRHI to a correct PNG)
+# DawnRHI handoff — 2026-08-10 (update 6: the pivotal join — real cooked UE shader pair renders through emdawnwebgpu IN A REAL BROWSER, offscreen-readback verified, pixel-identical to the native proof)
+
+Read this first, then "Update 5" below it, then "Update 4", "Update 3",
+"Update 2", "Update 1". Branch `dawnrhi-stage1`, pushed to
+`itpick/ut4-webgpu`. Same clean-path constraints as ever.
+
+## Update 6: real cooked shader, real browser, real pixels
+
+**Goal**: get the exact real, unmodified UE shader pair Update 5 proved
+renders correctly through native `FDawnDynamicRHI`
+(`ScreenPass.usf`'s `ScreenPassVS`/`CopyRectPS`, reflection-driven bind
+group at `@binding` 106/109/110) rendering through emdawnwebgpu **in a
+real browser**, with actual pixel evidence — the mirror image of Update
+5's native proof, but browser-side.
+
+**Done.** New: `DawnRHIWasmProbe/real_shader_wasm.cpp` (+
+`real_shader.html`), a standalone (non-UBT) wasm harness that:
+- loads the verbatim `tools/cook_real_shader.sh` output for
+  `ScreenPassVS`/`CopyRectPS` (same WGSL text + `.wgsl.bindings.txt`
+  reflection sidecars DawnRHITest's `-vs=/-ps=` path consumes natively),
+  baked into the wasm's MEMFS via `--preload-file` and read with plain
+  synchronous `fopen`/`fread` (no async fetch needed — `-sASYNCIFY=0`
+  throughout, same as the Goal 2 triangle probe);
+- parses the sidecar the same way `DawnRHITestMain.cpp`'s
+  `LoadBindingsSidecar`/`FindBindingIndex` do, and builds a
+  **reflection-driven** `WGPUBindGroupLayout` from the real binding
+  numbers (106/109/110) — not a hardcoded `{0,1,2}` assumption;
+- reproduces the exact same resource setup as native
+  `RunDawnRHIRealShaderTest()`: unit-quad vertex buffer (`ATTRIBUTE0`
+  float4 pos / `ATTRIBUTE1` float2 UV), 8x8 checkerboard texture (same
+  two colours, same 2x2 tiling), `DrawRectangleParameters` uniform buffer
+  (same `PosScaleBias`/`UVScaleBias`/`InvTargetSizeAndTextureSize`
+  values);
+- renders **offscreen** (a `RenderAttachment` texture, no
+  canvas/swapchain — see "why offscreen" below), then
+  `copyTextureToBuffer` + `mapAsync`s the result and logs the actual
+  readback pixel bytes (center, corner(4,4), and a 16x16 grid sample
+  across the whole image) to the console — real inspected bytes, not a
+  screenshot or an assumption.
+
+**Why offscreen, not canvas**: Update 5-era Goal 2 (the hand-authored
+triangle probe, `triangle_wasm.cpp`) already found headless Chrome in
+this environment can't screenshot a composited canvas (a
+`SharedImageBackingFactory` gap, `gpu/command_buffer/service/
+shared_image/shared_image_factory.cc:1001` — a Chrome-headless-env
+limitation, not a WebGPU/wasm defect). Rather than re-fight that wall,
+Goal 3 sidesteps it entirely: render-to-texture + buffer readback proves
+the exact same RHI-logic path (pipeline creation, bind group, draw,
+GPU execution, readback) without ever touching a canvas/compositor.
+This is explicitly one of the two acceptable proof forms for this
+milestone (canvas OR offscreen-readback-with-inspected-pixels) — chosen
+because it's the one that's actually drivable headless on this box today.
+
+**How it was actually verified working (not just "should work")**:
+`tools/cdp_capture.mjs` (new — dependency-free, Node 22+ built-in
+`WebSocket`/`fetch` only, no puppeteer/playwright needed) launches real
+headless Chrome with `--remote-debugging-port`, opens a target via the
+CDP `/json/new` HTTP endpoint, connects the devtools websocket, enables
+`Runtime`/`Log`/`Page`, navigates to `real_shader.html` served by
+`host/serve.py`'s COOP/COEP server, and captures every
+`Runtime.consoleAPICalled` message — i.e. the wasm code's own
+`console.log`s of the real mapped-buffer pixel values, captured via the
+browser's real devtools protocol, not simulated.
+
+**Real environment friction hit and fixed this session** (see
+`DawnRHIWasmProbe/BUILD_RECIPE.md` "Goal 3" for full detail):
+1. The cached Playwright Chrome binary needs real shared libs
+   (`libcairo.so.2` etc.) not present on this NixOS-style box's default
+   dynamic linker path — fixed by building an `LD_LIBRARY_PATH` from
+   `nix-shell -p <gtk3/cairo/pango/nss/mesa/...> --run 'echo
+   $NIX_LDFLAGS'`'s `-L` tokens and exporting it before launching Chrome.
+2. `--use-angle=vulkan` (needed for Goal 2's canvas path to get the real
+   GPU) is unnecessary here since there's no canvas — omitted, avoiding
+   any risk of reintroducing the compositor gap for a path that doesn't
+   need one.
+
+**A real bug found + fixed via the in-browser error callback actually
+doing its job**: the first render attempt read back all-zero pixels
+(`Center pixel = (0,0,0,0)`). `OnUncapturedError`
+(`WGPUUncapturedErrorCallbackInfo`, wired up specifically so this probe
+can make the same "zero Dawn validation errors" claim Update 5's native
+proof makes) caught the real cause immediately, with real Dawn diagnostic
+text: zero-initializing `WGPUTextureViewDescriptor` with `{}` leaves
+`mipLevelCount`/`arrayLayerCount` at literal `0` (NOT "whole resource" —
+that sentinel is `WGPU_MIP_LEVEL_COUNT_UNDEFINED`/
+`WGPU_ARRAY_LAYER_COUNT_UNDEFINED`, i.e. `UINT32_MAX`, per the
+`WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT` macro in `webgpu.h`), which Dawn's
+validation correctly rejects — cascading into `[Invalid TextureView]` /
+`[Invalid CommandBuffer]` errors on every downstream consumer. Fixed by
+setting both fields explicitly at both `wgpuTextureCreateView` call sites.
+This is a real webgpu.h/Dawn API-usage correctness fact worth remembering
+for the eventual real `FDawnDynamicRHI`-in-wasm port: **don't assume
+zero-init structs mean "default to whole resource"** — check each
+`*_INIT` macro's actual sentinel values.
+
+**Result — real render, zero WGPU errors, pixel-identical to the native
+proof** (full capture in
+`docs/real-shader-wasm-browser-console.log`):
+
+```
+Loaded 1 VS binding(s), 2 PS binding(s) from real reflection sidecars
+Reflected bind indices: DrawRectangleParameters=106 InputTexture=109 InputSampler=110
+Real-shader pipeline created OK (reflection-driven bind group layout)
+Frame submitted, mapping readback buffer...
+Center pixel = (255,200,40,255), corner(4,4) = (255,200,40,255)
+Grid sample: A(255,200,40)=128 B(30,60,200)=128 other=0 (16x16=256 total)
+SUCCESS: real cooked ScreenPassVS/CopyRectPS shader pair rendered a pixel-exact
+checkerboard through emdawnwebgpu in-browser (offscreen readback verified)
+```
+
+`Center pixel`/`corner(4,4)` match Update 5's native
+`DawnRHITest -vs=/-ps=/-out=` readout byte-for-byte
+(`Center pixel = (255,200,40,255), corner(4,4) = (255,200,40,255)`) — the
+16x16 grid sample confirms a correctly-tiled 2-colour checkerboard across
+the whole image (128/128/0 split, no stray pixels), the same shape of
+evidence Update 5's PNG check used.
+
+### What this proves / doesn't prove (be precise about scope)
+
+**Proves**: webgpu.h really is "the same API surface" for native Dawn and
+emdawnwebgpu at the level that matters for DawnRHI's actual logic —
+reflection-driven bind group layout construction from real sidecar data,
+real cooked WGSL (from the real `DawnShaderFormat` cook chain, not
+synthetic) compiling and executing correctly, real texture/uniform-
+buffer/vertex-buffer resource setup, a real draw, and a real GPU-side
+render — all identical in behaviour and pixel output across native Dawn
+and emdawnwebgpu-in-a-real-browser. This is the actual thing this
+session's mission asked to establish.
+
+**Does NOT prove** (the precise remaining path to a full game renderer):
+1. **Canvas/swapchain presentation in-browser** — still blocked on the
+   Goal 2 `SharedImageBackingFactory` headless-Chrome gap; genuinely
+   untested in a real *windowed* browser (Brave/Chrome with a real
+   display) on this box. Next concrete step: get access to a windowed
+   browser environment (or a headless Chrome build/flag combination that
+   doesn't hit the shared-image gap) and re-run `triangle_wasm`/a canvas
+   variant of `real_shader_wasm` to visually confirm presentation, not
+   just offscreen correctness.
+2. **The actual `FDawnDynamicRHI`/`FDawnCommandContext` UE module
+   compiled to wasm** — `real_shader_wasm.cpp` is a standalone harness
+   that reimplements the same resource setup directly against raw
+   webgpu.h, proving the *approach* works, not a wasm build of the real
+   UE `DawnRHI` module itself. Porting the actual module needs UBT/
+   engine-side wasm target support (a `Platform=Wasm`/similar target
+   definition, toolchain wiring for emscripten instead of the native
+   Linux clang toolchain) — entirely untouched this session, and
+   significant scope on its own (UBT's platform abstraction assumes a
+   native OS target in ways that will need real investigation, not just
+   flag changes).
+3. **Async main-loop yielding for a live render loop**
+   (`emscripten_request_animation_frame`/`ASYNCIFY`) — this probe does
+   exactly one offscreen frame then exits via its callback chain
+   (`emscripten_exit_with_live_runtime()` keeps the runtime alive for the
+   async Request*/mapAsync callbacks, but there's no per-frame loop).
+   A real game renderer needs a live per-frame loop, which needs one of
+   `emscripten_request_animation_frame_loop` (callback-driven, no
+   blocking, no ASYNCIFY needed — probably the right choice) or
+   `ASYNCIFY` (lets C++ code look like it's blocking; heavier, and
+   Update 1's "Standalone Dawn/emdawnwebgpu probes... need the libc++
+   recipe" + this session's own `-sASYNCIFY=0` throughout suggest
+   avoiding it if the callback-driven form suffices, which it should for
+   a fixed render-then-present loop) — not attempted this session, this
+   probe had no per-frame work to loop.
+4. **Real mesh/material shaders** (as opposed to the `ScreenPass`
+   fullscreen-blit pair) — same "not yet attempted, next logical step"
+   status as Update 5 left it for native; wasm doesn't add a NEW gap here
+   beyond what Update 5 already flagged (UE's auto-generated
+   `View`/`Primitive` uniform buffer plumbing, more complex reflection
+   needs for combined-image-sampler/bindless patterns) — whatever cooks
+   real through `DawnShaderFormat` should carry through this wasm path
+   the same way `ScreenPassVS`/`CopyRectPS` just did, unverified but with
+   no known-different wasm-specific blocker.
+
+### Files touched this session
+
+`DawnRHIWasmProbe/real_shader_wasm.cpp`, `DawnRHIWasmProbe/
+real_shader.html`, `DawnRHIWasmProbe/BUILD_RECIPE.md` (Goal 3 section
+added), `tools/cdp_capture.mjs` (new), `docs/
+real-shader-wasm-browser-console.log` (new, real captured evidence) — all
+pushed. Local engine-tree copies at `/mnt/models/ss-build/UnrealEngine/
+Engine/Source/Programs/DawnRHIWasmProbe/` kept in sync by hand (same
+split-layout note as every previous update). The real cooked
+`ScreenPassVS.wgsl`/`CopyRectPS.wgsl` + `.bindings.txt` sidecars
+themselves are NOT committed (regenerable via `tools/cook_real_shader.sh`,
+documented in `BUILD_RECIPE.md` — same "don't commit generated cook
+output" policy as everywhere else in this branch); they live at
+`/home/lucas/workspace/dawnrhi-wasm/real/` on framepick if needed again
+without a full recook.
+
+## Update 5 (previous session, preserved below): MILESTONE 2/3 DONE — real SPIR-V reflection wired end-to-end, a real UE shader pair renders through FDawnDynamicRHI to a correct PNG
 
 Read this first, then "Update 4" below it, then "Update 3", "Update 2", "Update 1".
 Branch `dawnrhi-stage1`, pushed to `itpick/ut4-webgpu`. Same clean-path
