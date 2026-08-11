@@ -1,0 +1,63 @@
+diff --git a/Engine/Platforms/SimplyStream/Source/Programs/UnrealBuildTool/SimplyStreamToolChain.cs b/Engine/Platforms/SimplyStream/Source/Programs/UnrealBuildTool/SimplyStreamToolChain.cs
+index b66c2835c..9c1f8173b 100644
+--- a/Engine/Platforms/SimplyStream/Source/Programs/UnrealBuildTool/SimplyStreamToolChain.cs
++++ b/Engine/Platforms/SimplyStream/Source/Programs/UnrealBuildTool/SimplyStreamToolChain.cs
+@@ -230,6 +230,9 @@ namespace UnrealBuildTool
+ 			// C++23 stricter Unicode code-unit rules flag u8 string literal -> TCHAR (char16_t)
+ 			// as ambiguous. UE source hits this extensively in Core/HTTP/etc.
+ 			Arguments.Add("-Wno-character-conversion");
++			// STOCK-EMSDK BRING-UP: stock clang 24 emits warnings their clang 23 did not.
++			Arguments.Add("-Wno-unused-template");
++			Arguments.Add("-Wno-error");
+ 		}
+ 
+ 		protected override void GetCppStandardCompileArgument(CppCompileEnvironment CompileEnvironment, List<string> Arguments)
+@@ -745,6 +748,9 @@ namespace UnrealBuildTool
+ 			//Result += " -lidbfs.js";
+ 			//Result += " -lpthread.js";
+ 			Result += " -lhtml5_webgl.js";
++			// STOCK-EMSDK BRING-UP: link driver runs in C mode; force C++ so emcc auto-links the
++			// correct noexcept/mt/memory64 libc++ variant. Without this stock emcc 6.x links NO libc++.
++			Result += " -sDEFAULT_TO_CXX";
+ 			//Result += " -s LZ4=1";
+ 			Result += " -lwebsocket.js";
+ 			// wndr 5.8/wasm: setjmp/longjmp shim. We keep -sSUPPORT_LONGJMP=0 (instrumented longjmp hurts perf); this
+@@ -812,6 +818,38 @@ namespace UnrealBuildTool
+ 				// behaviour on 5.x is what the =0 path used to ask for.
+ 			}
+ 
++			if (LinkEnvironment.OutputFilePath.GetFileName().Contains("DawnRHITest") || LinkEnvironment.OutputFilePath.GetFileName().Contains("UnrealTournament"))
++			{
++				Result += " -sPROXY_TO_PTHREAD"; // DawnRHITest offscreen boot: engine loop off the browser main thread
++				// emdawnwebgpu JS library: the webgpu.h C entry points compile against the
++				// --use-port=emdawnwebgpu headers (on every compile rsp) but the port must ALSO be on the
++				// LINK line or emscripten emits runtime abort() stubs for them. Target.cs link args are
++				// dropped by this toolchain, so inject here -- same flag DawnRHIWasmProbe used at link.
++				// Only the bare DawnRHITest program needs the STOCK emsdk emdawnwebgpu port;
++				// the full UnrealTournament game link already carries SimplyStream's vendored
++				// (open, upstream Google) emdawnwebgpu JS glue + emdawn/webgpu_utils objects,
++				// so adding --use-port there duplicates the WebGPU JS library (structInfo32 dup).
++				if (LinkEnvironment.OutputFilePath.GetFileName().Contains("DawnRHITest"))
++				{
++					Result += " --use-port=emdawnwebgpu";
++				}
++				// emdawnwebgpu TimedWaitAny (needed so wgpuInstanceWaitAny works -- UINT64_MAX is a finite
++				// timed wait under emdawnwebgpu) requires stack-yielding to bridge the browser-async device
++				// request into UE's synchronous RHIInit. Asyncify provides that. Scoped to this test program.
++				Result += " -sASYNCIFY -sASYNCIFY_STACK_SIZE=131072";
++
++				// ICU internationalization data: FICUInternationalization::Initialize() (Engine/Source/Runtime/Core/Private/
++				// Internationalization/ICUInternationalization.cpp) probes <ContentDir>/Internationalization/icudt64l/ via
++				// FPaths::DirectoryExists + loose-file udata opens. SimplyStream links ICU 64 (see Source/ThirdParty/ICU/
++				// icu4c-64_1, libicu64b.a) so it is icudt64l specifically, not 53l/78l. None of that is in the wasm MEMFS by
++				// default, so PreInit hits a Fatal there. Preload just the icudt64l data -- not the 53l/78l siblings, not the
++				// CJK/EFIGS/English/All subset folders under Content/Internationalization (~33MB vs ~279MB for the whole tree)
++				// -- at the exact relative path UE resolves at runtime: the wasm binary's virtual CWD is Engine/Binaries/
++				// SimplyStream, so its "../../../Engine/Content/Internationalization" probe lands on
++				// /Engine/Content/Internationalization in the MEMFS root.
++				string ICUDataSrcDir = DirectoryReference.Combine(Unreal.EngineDirectory, "Content", "Internationalization", "icudt64l").FullName;
++				Result += $" --preload-file \"{ICUDataSrcDir}@Engine/Content/Internationalization/icudt64l\"";
++			}
+ 			return Result;
+ 		}
+ 

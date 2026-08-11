@@ -1,0 +1,21 @@
+<!doctype html><html><head><meta charset=utf-8><title>UnrealTournament wasm boot</title></head>
+<body>
+<canvas class=emscripten id=canvas oncontextmenu="event.preventDefault()" tabindex=-1 width=1280 height=720></canvas>
+<script>
+// Stub SimplyStream platform-loader state so the standalone boot does not throw on project_id.
+window.parent = window;
+window.state = window.parent.state = { ias:{}, project_id:"test", project_rev:"0", session_id:"00000000-0000-0000-0000-000000000000", platform_addr:"", asset_routing:{}, edge_boost_asset_host:"", vfs_asset_base_url:"" };
+var __c = document.getElementById("canvas");
+var Module = {
+  canvas: __c,
+  arguments: [],
+  print:   function(t){ console.log(t); },
+  printErr:function(t){ console.error(t); },
+  locateFile: function(p, pre){ return (pre||"") + p; },
+  onAbort: function(w){ console.error("ABORT: " + w); },
+  onRuntimeInitialized: function(){ console.log("*** onRuntimeInitialized — wasm instantiated ***"); },
+};
+window.onerror = function(m){ console.error("window.onerror: " + m); };
+</script>
+<script async src="UnrealTournament.js"></script>
+</body></html>
