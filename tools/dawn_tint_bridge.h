@@ -77,6 +77,14 @@ typedef struct FDawnReflectedBinding
 	unsigned int Set;
 	unsigned int Binding;
 	unsigned int Kind; // EDawnReflectedBindingKind
+	// 1 = declared in the HLSL/pre-legalization SPIR-V but eliminated by
+	// legalization's dead-resource pass, i.e. NOT present in the cooked WGSL.
+	// UE's parameter map must still contain such entries (FShaderParameter/
+	// FShaderResourceParameter::Bind FATALS on missing non-optional
+	// parameters even when a permutation does not use them -- seen live on
+	// FLumenCardCS's LumenCardOutputs, 2026-08-11); runtime bind-group
+	// construction must SKIP them (they have no WGSL binding).
+	unsigned int bDeclaredOnly;
 	char Name[128];    // real SPIR-V OpName text, truncated; always NUL-terminated
 } FDawnReflectedBinding;
 

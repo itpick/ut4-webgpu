@@ -16,7 +16,7 @@
 #include "Misc/Paths.h"
 #include "ShaderCore.h" // AddShaderSourceDirectoryMapping
 
-static const FGuid UE_SHADER_WEBGPU_VER = FGuid("2B6E9C43-7D1A-4F5E-B8C2-0A3D6F9E4B17");
+static const FGuid UE_SHADER_WEBGPU_VER = FGuid("6A5D0F82-3E9C-4B1F-A7D4-8C2E5B0F9A63");
 
 class FShaderFormatWebGPU : public UE::ShaderCompilerCommon::FBaseShaderFormat
 {

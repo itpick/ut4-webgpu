@@ -150,6 +150,7 @@ namespace
 		int Set = -1;
 		int Binding = -1;
 		EDawnReflectedBindingKind Kind = DawnBindingKind_Unknown;
+		bool bDeclaredOnly = false;
 	};
 
 	struct FLooseMember
@@ -524,7 +525,12 @@ namespace
 	thread_local volatile sig_atomic_t GCrashGuardActive = 0;
 	thread_local volatile sig_atomic_t GCrashSignal = 0;
 
-	constexpr int GGuardedSignals[] = { SIGILL, SIGABRT, SIGSEGV, SIGBUS, SIGFPE };
+	// SIGTRAP included: tint's ICE path calls debugger::Break() (a trap
+	// instruction / SIGTRAP) BEFORE __builtin_trap(); un-guarded, that killed
+	// whole ShaderCompileWorker batches ("Internal Error!" jobs with no error
+	// text -- 297 of them in the second full UT cook) even though the banner
+	// was printed and SIGILL was guarded.
+	constexpr int GGuardedSignals[] = { SIGILL, SIGTRAP, SIGABRT, SIGSEGV, SIGBUS, SIGFPE };
 	constexpr size_t GNumGuardedSignals = sizeof(GGuardedSignals) / sizeof(GGuardedSignals[0]);
 	struct sigaction GPrevActions[GNumGuardedSignals];
 
@@ -656,6 +662,13 @@ static FDawnTintCookResult DawnLegalizeAndCookImpl(const unsigned int* SpirvWord
 	FDawnTintCookResult Out = {};
 
 	std::vector<uint32_t> Spirv(SpirvWords, SpirvWords + SpirvWordCount);
+	// Keep the pre-legalization module: DECLARED-resource reflection must run
+	// on it (legalization's dead-resource elimination removes unused
+	// resources, but UE's parameter map needs entries for every DECLARED
+	// non-optional parameter -- Bind() fatals otherwise, seen live on
+	// FLumenCardCS's LumenCardOutputs). Post-legalization reflection then
+	// marks which of those survive into the actual WGSL (bDeclaredOnly=0).
+	const std::vector<uint32_t> PreLegalizeSpirv = Spirv;
 
 	std::string LegalizeLog;
 	if (!Legalize(Spirv, LegalizeLog))
@@ -674,7 +687,20 @@ static FDawnTintCookResult DawnLegalizeAndCookImpl(const unsigned int* SpirvWord
 	// an actual shader uses should survive to be reported/bound).
 	std::string DisassemblyError;
 	FGlobalsInfo Globals;
-	std::vector<FBinding> ReflectedBindings = ReflectBindings(Spirv, DisassemblyError, &Globals);
+	std::vector<FBinding> ReflectedBindings = ReflectBindings(PreLegalizeSpirv, DisassemblyError, &Globals);
+	{
+		std::string UsedError;
+		const std::vector<FBinding> UsedBindings = ReflectBindings(Spirv, UsedError, nullptr);
+		for (FBinding& Declared : ReflectedBindings)
+		{
+			bool bUsed = false;
+			for (const FBinding& U : UsedBindings)
+			{
+				if (U.Set == Declared.Set && U.Binding == Declared.Binding) { bUsed = true; break; }
+			}
+			Declared.bDeclaredOnly = !bUsed;
+		}
+	}
 	std::string ReflectionSummary = DisassemblyError.empty() ? SummarizeBindings(ReflectedBindings) : DisassemblyError;
 
 	// Debug aid (env-var gated): dump the post-legalization, pre-strip
@@ -743,6 +769,7 @@ static FDawnTintCookResult DawnLegalizeAndCookImpl(const unsigned int* SpirvWord
 			Dst.Set = static_cast<unsigned int>(Src.Set);
 			Dst.Binding = static_cast<unsigned int>(Src.Binding);
 			Dst.Kind = static_cast<unsigned int>(Src.Kind);
+			Dst.bDeclaredOnly = Src.bDeclaredOnly ? 1u : 0u;
 			std::memset(Dst.Name, 0, sizeof(Dst.Name));
 			std::strncpy(Dst.Name, Src.Name.c_str(), sizeof(Dst.Name) - 1);
 		}

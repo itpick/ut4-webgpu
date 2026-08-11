@@ -150,9 +150,15 @@ bool FDawnShaderConductorLoader::CompileHlslToSpirv(
 	// -HV 2021 ('template' is reserved pre-2021: ~70 real global-shader
 	// failures in the first full UT cook); everything else must stay -HV 2018
 	// (see the long note above -- 2021 breaks pervasive vector &&/||).
-	static const char* ExtraArgs2018[] = { "-fspv-target-env=vulkan1.1", "-HV", "2018" };
-	static const char* ExtraArgs2021[] = { "-fspv-target-env=vulkan1.1", "-HV", "2021" };
-	Options.numDXCArgs = 3;
+	// -fvk-force-storage-image-format: without it DXC emits storage images
+	// with format Unknown ("texture_storage_2d<undefined, read_write>" after
+	// tint), and tint's textureStore/textureLoad overload resolution rejects
+	// the undefined texel format (~709 remaining SM5 global-shader failures
+	// in the second full UT cook). Forcing the format from the HLSL type
+	// gives tint a concrete texel format.
+	static const char* ExtraArgs2018[] = { "-fspv-target-env=vulkan1.1", "-HV", "2018", "-fvk-force-storage-image-format" };
+	static const char* ExtraArgs2021[] = { "-fspv-target-env=vulkan1.1", "-HV", "2021", "-fvk-force-storage-image-format" };
+	Options.numDXCArgs = 4;
 	Options.DXCArgs = bHlsl2021 ? ExtraArgs2021 : ExtraArgs2018;
 
 	Compiler::TargetDesc Target = {};
