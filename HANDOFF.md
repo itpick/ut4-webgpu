@@ -265,86 +265,130 @@ no-`#pragma-once` real UE shader file flattened by this tool before now**
 — worth remembering if something *else* looks mysteriously
 under-included later.
 
-### Where it stops now (two narrower, real walls — neither `View`-shaped)
+### `DrawRectangleParameters` wall: also broken through (same recipe as View)
 
-Cooking the fully-flattened, fully-real `NullPixelShader.usf` (View +
-ViewState + LWC all now resolved) hits two remaining error classes:
+Dumped the same way: `$BIN -dumpubdecl DrawRectangleParameters
+/tmp/dawn_dr_decl.hlsl DawnDumpCommandlet` → real 791-char declaration.
+`flatten_includes.py`'s `--generated-ub-file` still only takes one path, so
+the simplest fix (used, not a tool change) is `cat`-ing the View + 
+DrawRectangleParameters dumps into one file before passing it in — UE's
+real generated content for `/Engine/Generated/GeneratedUniformBuffers.ush`
+is itself just every referenced uniform buffer's declaration concatenated,
+so this is faithful, not a hack. Confirmed: the
+`use of undeclared identifier 'DrawRectangleParameters'` errors are gone
+from the cook output after this.
 
-1. **`DrawRectangleParameters` uniform buffer undeclared.** Exactly the
-   same shape as the original `View` wall, on a *different* uniform
-   buffer struct — should be trivially fixable the same way: `$BIN
-   -dumpubdecl DrawRectangleParameters /tmp/dawn_dr_decl.hlsl
-   DawnDumpCommandlet`, then concatenate that dump's content with the
-   View dump (or extend `flatten_includes.py`'s `--generated-ub-file` to
-   accept a directory/multiple files — right now it's a single path,
-   simplest fix is `cat` both dumps into one file first) before flattening
-   again. **Not yet done this session** — straightforward next step, same
-   recipe as View.
-2. **`operands for short-circuiting logical binary operator must be
-   scalar, for non-scalar types use 'and'`** — an HLSL2021-vs-classic
-   language-mode mismatch: some real UE shader code uses `&&`/`||` on
-   vector types, which is only legal in DXC's non-2021 HLSL mode (or needs
-   `and`/`or` in 2021 mode). This is a **ShaderConductor/DXC invocation
-   flag** issue, not a missing-declaration issue — check what `-HV`
-   (HLSL version) flag `FDawnShaderConductorLoader::CompileHlslToSpirv`
-   passes today (`DawnShaderFormat/Private/DawnShaderConductorLoader.cpp`/
-   `.h`) vs. what real UE's `ShaderConductorContext` sets for
-   `SF_VULKAN_SM5`-class platforms (likely needs an explicit non-2021 `-HV`
-   or the `COMPILER_SUPPORTS_HLSL2021=0` define threaded through more
-   consistently — we only defined `VULKAN_PROFILE_SM5=1`, not
-   `COMPILER_SUPPORTS_HLSL2021` itself, so its `#ifndef` default (0) should
-   already apply... worth double-checking whether some later `#include` is
-   force-defining it to 1 regardless, or whether the real issue is
-   ShaderConductor's own default HLSL version independent of our source
-   defines). **Not yet root-caused this session** — next concrete
-   debugging step for whoever picks this up.
+### Where it stops now: one real wall, precisely diagnosed but NOT yet fixed — the `UniformBuffer Name { ... }` HLSL block-remap construct
 
-There's also a **macro token-pasting** error class (`pasting formed
-'.AmbientCubemapIntensity', an invalid preprocessing token`) that appeared
-in the same run — very likely a **downstream symptom of #2** (DXC aborts
-mid-macro-expansion once it hits the `and`/`or` error and produces noisy
-cascading pasting errors afterward), not a third independent wall — worth
-re-checking count/content of errors once #2 is fixed before assuming it's
-separate.
+With View + ViewState + LWC + DrawRectangleParameters all resolved, the
+*first* real error in the cook (everything after it is a cascade, see
+below) is:
+
+```
+NullPixelShader.usf:4002:1: error: unknown type name 'UniformBuffer'
+```
+
+on this real, auto-generated line (from `CreateUniformBufferShaderDeclaration`'s
+own output, confirmed by reading `RenderCore/Private/ShaderParameters.cpp`
+directly — NOT a flattener artifact):
+
+```cpp
+Builder.Appendf(
+    TEXT("UniformBuffer %s\n")
+    TEXT("{\n")
+    TEXT("%s")
+    TEXT("};\n"),
+    UniformBufferName,
+    *Decl.Remappings   // the UB_CB_REMAP_PARAMETER(...)/UB_CB_REMAP_RESOURCE(...) lines
+);
+```
+
+**This is emitted unconditionally** (not just in the bindless branch) right
+after the real `cbuffer`-equivalent block (which itself correctly resolves
+via `UB_CB_DEFINITION_START`/`_END` macros, defined in
+`Engine/Shaders/Public/Platform.ush:519-528` — those work fine). This
+SECOND block, using the literal keyword `UniformBuffer` (capital U, no
+macro indirection — confirmed via `grep -rn "define UniformBuffer\b"` across
+the ENTIRE `Engine/Shaders/` tree: **zero hits**, so it is not a UE macro
+we're failing to bring into scope, unlike everything else in this wall so
+far), is presumably a **real DXC/HLSL "logical uniform-buffer-member
+remapping" language construct** — real UE's actual production shader
+compiles (Vulkan/D3D backends) must support it, since `CreateUniformBufferShaderDeclaration`
+always emits it. Two hypotheses tried this session, both **inconclusive
+(no measurable effect on the error)**:
+
+1. Added `-HV 2021` to `FDawnShaderConductorLoader::CompileHlslToSpirv`'s
+   `Options.DXCArgs` (`DawnShaderFormat/Private/DawnShaderConductorLoader.cpp`
+   — **kept**, since it's still independently well-motivated by
+   `COMPILER_SUPPORTS_HLSL2021`-gated code elsewhere in real shader source,
+   even though it alone did not unlock the `UniformBuffer` construct).
+   Rebuilt + recooked: identical error, byte-for-byte same output.
+2. Tried bumping `Options.shaderModel` from the ShaderConductor default
+   `{6,0}` to `{6,6}` (guessing `UniformBuffer` needs a newer shader model)
+   — **reverted**, zero effect, not worth the unexplained diff.
+
+**Not yet tried / next concrete steps for a fresh agent**:
+- Check whether the bundled Linux `libdxcompiler.so`
+  (`Engine/Binaries/ThirdParty/ShaderConductor/Linux/x86_64-unknown-linux-gnu/`)
+  is simply too old to support this construct at all (there's a real
+  `dxc.exe`/`dxcompiler.dll` for Win64 in the same ThirdParty tree but no
+  Linux `dxc` CLI binary to test standalone — would need to either extract
+  a version string via `strings libdxcompiler.so | grep -i version` or spin
+  up the Win64 `dxc.exe` under Wine to test the exact same input against a
+  possibly-newer DXC build).
+- Search for how real UE's committed (non-open, so check if accessible)
+  `VulkanShaderFormat`/D3D backend sources invoke `ShaderConductor::Compiler::Compile`
+  for a hint at what flag/version actually makes their production builds
+  accept this same generated text — if any such reference source is
+  available in this licensed tree, `grep -rn "UniformBuffer" Engine/Source/Developer/*ShaderFormat*`
+  for how it's consumed downstream might also reveal whether some OTHER
+  system (SPIRV-Reflect's own preprocessing, or a UE-side text rewrite
+  before DXC ever sees it) is supposed to have already turned
+  `UniformBuffer Name { ... }` into something DXC-native before this point
+  — i.e. double-check this literal text is really meant to reach DXC as-is
+  and isn't itself pre-processed by something in the real pipeline we
+  haven't stood up.
+- The **macro token-pasting** error class (`pasting formed
+  '.AmbientCubemapIntensity', an invalid preprocessing token`) that appears
+  alongside this is confirmed (by error ordering: `grep -n "error:"` shows
+  `UniformBuffer` first, pasting errors immediately after, same line
+  range 4002-4900ish) to be a **downstream cascade** of this one wall, not
+  independent — DXC's parser recovery after rejecting `UniformBuffer` as a
+  type produces garbage on every subsequent `UB_CB_REMAP_PARAMETER`-expanded
+  line in that same block. Fixing `UniformBuffer` should make this whole
+  class disappear; don't chase it separately.
 
 ### Bottom line
 
 The **core "no C++ reflection access" wall from Update 2 is gone**: real
-`View` cbuffer declaration, real `ViewState`/`GetPrimaryView` companion
-code, and real LWC (`FDFVector3` etc.) types all now come from UE's own
-real generator functions/source (not hand-written), and a real,
-byte-for-byte-unmodified UE global shader compiles *through* all three via
-the real `DawnShaderFormat` `IShaderFormat`. What's left
-(`DrawRectangleParameters`, HLSL2021 operator mode) is exactly the kind of
-long-tail, per-shader compatibility work the milestone brief anticipated
-("wall #1 broken, keep going") — no more structural/access blockers of the
-`View`-class remain that are known about today.
+`View`/`DrawRectangleParameters` cbuffer declarations, real
+`ViewState`/`GetPrimaryView` companion code, and real LWC (`FDFVector3`
+etc.) types all now come from UE's own real generator functions/source
+(not hand-written), and a real, byte-for-byte-unmodified UE global shader
+compiles *through* all four via the real `DawnShaderFormat` `IShaderFormat`.
+What's left (the `UniformBuffer {...}` remap-block construct) is a single,
+precisely-located, narrow DXC-compatibility question — not a missing-access
+or missing-reflection problem of the `View`-class anymore.
 
 ### Next steps for a fresh agent
 
-1. Dump+splice `DrawRectangleParameters` the same way as `View` (see
-   above) — cheap, same recipe, do this first.
-2. Root-cause the HLSL2021 `&&`/`||` operator error: check
-   `FDawnShaderConductorLoader::CompileHlslToSpirv`'s exact `-HV`/language
-   flags passed to `ShaderConductor::Compiler::Compile`
-   (`ShaderConductor.h`'s `Options`/`DXCArgs`), and compare against what a
-   real UE `SP_VULKAN_SM5` compile passes (check
-   `VulkanShaderFormat`/`ShaderCompilerCommon`'s `CrossCompilerCommon`
-   HLSL-version handling if source is available, or empirically try
-   forcing an explicit older `-HV` flag).
-3. Once NullPixelShader.usf (or another simple global PS) cooks 100% clean
-   end-to-end, retry a REAL material/UT4 shader (more complex, will likely
-   need `Primitive` uniform buffer dumped too, same recipe) as the next
-   acceptance step, then proceed to the milestone's steps 3/4 (real
-   resource-table reflection into `FShaderCompilerOutput`/DawnRHI bind
-   groups; render a real mesh through DawnRHI).
-4. Remember: `Development` config was never retried after the Shipping fix
+1. Root-cause the `UniformBuffer Name { ... }` construct per the concrete
+   steps immediately above — this is the ONE remaining wall standing
+   between real UE shader source and a 100%-clean cook.
+2. Once `NullPixelShader.usf` (or another simple global PS) cooks 100%
+   clean end-to-end, retry a REAL material/UT4 shader (more complex, will
+   likely need `Primitive` uniform buffer dumped too, same recipe as
+   View/DrawRectangleParameters) as the next acceptance step, then proceed
+   to the milestone's steps 3/4 (real resource-table reflection into
+   `FShaderCompilerOutput`/DawnRHI bind groups; render a real mesh through
+   DawnRHI).
+3. Remember: `Development` config was never retried after the Shipping fix
    — if a `Development` build is ever needed again (e.g. for debug
    symbols/asserts), expect to re-hit the `AutomationController`/
    `WITH_DEV_AUTOMATION_TESTS`-gated `FileUtilities` test-file walls from
    early Update 3 investigation (both real, both would need the same kind
    of narrow fix, not attempted).
-5. The 4 local (unpushed) engine-source patches above are already applied
+4. The 6 local (unpushed) engine-source patches above are already applied
    on framepick's persistent tree — if that tree is ever reset, reapply
    from the diffs in this section before rebuilding `DawnCookProbe`.
 

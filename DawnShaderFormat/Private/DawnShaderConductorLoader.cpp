@@ -125,8 +125,16 @@ bool FDawnShaderConductorLoader::CompileHlslToSpirv(
 
 	Compiler::Options Options = {};
 	Options.disableOptimizations = bDisableOptimizations;
-	static const char* ExtraArgs[] = { "-fspv-target-env=vulkan1.1" };
-	Options.numDXCArgs = 1;
+	// -HV 2021: real UE shader source uses `&&`/`||` on vector types, which
+	// DXC only allows in HLSL2021 mode (non-2021 wants and/or) -- keeping
+	// this is well-motivated by COMPILER_SUPPORTS_HLSL2021-gated code
+	// elsewhere in real shader source. NOTE: this alone did NOT unlock the
+	// separate, still-unsolved `UniformBuffer Name { ... }` block-remap
+	// construct real UE's CreateUniformBufferShaderDeclaration() also
+	// emits (tried -HV 2021 and a shaderModel {6,6} bump, neither changed
+	// that error at all -- see HANDOFF.md "update 3", "Where it stops now").
+	static const char* ExtraArgs[] = { "-fspv-target-env=vulkan1.1", "-HV", "2021" };
+	Options.numDXCArgs = 3;
 	Options.DXCArgs = ExtraArgs;
 
 	Compiler::TargetDesc Target = {};
