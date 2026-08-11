@@ -1,0 +1,24 @@
+diff --git a/Source/UnrealTournamentEditor.Target.cs b/Source/UnrealTournamentEditor.Target.cs
+index ade245b..1560f15 100755
+--- a/Source/UnrealTournamentEditor.Target.cs
++++ b/Source/UnrealTournamentEditor.Target.cs
+@@ -10,6 +10,7 @@ public class UnrealTournamentEditorTarget : TargetRules
+ 	{
+ 		Type = TargetType.Editor;
+ 		DefaultBuildSettings = BuildSettingsVersion.V2;
++		IncludeOrderVersion = EngineIncludeOrderVersion.Oldest;
+ 		// UE 5.8 removed C++17: CppStandardVersion.Minimum = Cpp20
+ 		// (5.6 had Minimum = Cpp17). Set the standard explicitly rather than
+ 		// bumping DefaultBuildSettings, which would also escalate the V4-V7
+@@ -21,7 +22,10 @@ public class UnrealTournamentEditorTarget : TargetRules
+ 
+ 		ExtraModuleNames.AddRange(new string[] {
+ 			"UnrealTournament",
+-			"UnrealTournamentEditor"
++			"UnrealTournamentEditor",
++			// Our open WebGPU IShaderFormat (SF_WEBGPU_SM5/ES31) — force it into this
++			// Unique build environment so a SimplyStream cook can compile shaders to WGSL.
++			"DawnShaderFormat"
+ 		});
+ 
+ 		if (Target.Platform == UnrealTargetPlatform.Mac)
