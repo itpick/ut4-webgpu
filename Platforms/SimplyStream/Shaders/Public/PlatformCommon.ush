@@ -1,0 +1,161 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+/*=============================================================================
+	PlatformCommon.ush: WebGPU (SimplyStream) platform shader prelude.
+
+	Included by Engine/Shaders/Public/Platform.ush when OVERRIDE_PLATFORMCOMMON_USH
+	is defined (set by WebGPUShaderFormat's ModifyWebGPUCompilerInput). It stands in
+	for the per-compiler common header (Vulkan/D3D/Metal/GL) on the WebGPU path —
+	which otherwise pulls in *none*, because the WebGPU compiler sets neither
+	COMPILER_VULKAN/HLSL/GLSL/METAL, only COMPILER_HLSLCC + COMPILER_WEBGPU.
+
+	IMPORTANT — include order: this file is included very early (Platform.ush, before
+	most engine shader macros). So it may only override symbols the engine does NOT
+	subsequently re-#define. HLSL intrinsics / keywords are safe (the engine does not
+	redefine them); engine macros such as UNROLL are NOT (they get re-#defined later
+	and win), so do not try to neutralize those here — guard them at the call site.
+
+	NOT duplicated here (set in C++ to avoid macro redefinition):
+	  FEATURE_LEVEL, A8_SAMPLE_MASK, RWBuffer, PLATFORM_SUPPORTS_ROV,
+	  COMPILER_SUPPORTS_DUAL_SOURCE_BLENDING_SLOT_DECORATION
+	  -> see ModifyWebGPUCompilerInput / SpirVShaderCompiler.inl::ModifyCompilerInput.
+=============================================================================*/
+
+#pragma once
+
+// Bump this GUID whenever this prelude changes, to invalidate the shader DDC.
+#pragma message("UESHADERMETADATA_VERSION 4C1B9E07-2A6D-4E1F-9B83-2D5A7F0C18E4")
+
+// WGSL/tint has no 'noperspective' interpolation qualifier; drop it so declarations
+// like `noperspective float2 UV : TEXCOORD0;` compile (perspective-correct fallback).
+#define noperspective
+
+// WGSL exposes only a workgroup-scoped barrier with execution sync. Map the HLSL
+// group/device barriers the engine uses onto it.
+//   - GroupMemoryBarrier is also rewritten by a source ReplaceInline today; this is
+//     the canonical home so that rewrite can be retired once this path is verified.
+//   - AllMemoryBarrier currently lives as a local #define in BloomFindKernelCenter.usf
+//     (its only user); centralizing it here lets that stock-shader edit be reverted.
+#define GroupMemoryBarrier GroupMemoryBarrierWithGroupSync
+#define AllMemoryBarrier   GroupMemoryBarrierWithGroupSync
+
+// Wave/subgroup intrinsics: when subgroup support is NOT enabled for this build,
+// WGSL cannot express them, so stub them to keep shaders compiling (results are not
+// meaningful — this matches the engine's unsupported-feature path, which #if's these
+// uses out anyway). When CFLAG_WaveOperations is set, PLATFORM_SUPPORTS_SM6_0_WAVE_-
+// OPERATIONS=1 and the real intrinsics are left intact.
+#if !PLATFORM_SUPPORTS_SM6_0_WAVE_OPERATIONS
+	#define WaveActiveSum(x)      0
+	#define WaveIsFirstLane()     false
+	#define WaveGetLaneCount()    0
+	#define WaveReadLaneFirst(...) 0
+#endif
+
+//=============================================================================
+// Nanite VisBuffer64 — software 64-bit image atomic-max (S3 / S11.1)
+//=============================================================================
+// WGSL has neither 64-bit atomics nor texture atomics. Nanite packs (payload, depth)
+// into a UlongType and `ImageInterlockedMaxUInt64`-es it onto `RWTexture2D<UlongType>
+// OutVisBuffer64`. On WebGPU we:
+//   - RHI: back the Atomic64Compatible texture with a WGPUBuffer of (lo,hi) u32 pairs
+//     (FWebGPUTexture::IsAtomicBacked; WebGPUTexture.cpp ctor + WebGPUUAV/PipelineState).
+//   - cooker (WebGPUShaderFormat): rewrite the Nanite-scoped `RWTexture2D<UlongType>`
+//     declarations/params to `RWStructuredBuffer<uint>` (stride 2 per texel) and the
+//     `Texture2D<UlongType>` SRV reads to `StructuredBuffer<uint>`, linearising the 2D
+//     coord at the access site (TSR-PrevAtomic precedent, WebGPUShaderCompiler.cpp).
+//   - prelude (here): provide the emulated atomic-max + the COMPILER_SUPPORTS_* defines
+//     so NaniteWritePixel.ush takes the real path instead of `#error`.
+//
+// DORMANT until the cooker defines WEBGPU_NANITE_VISBUFFER64 (only when cooking the
+// Nanite VisBuffer shaders, Phase 1 bring-up). Defined here in full so the algorithm is
+// reviewable now; it compiles into nothing while the guard is unset, so current cooks
+// (Nanite off) are unaffected.
+#if WEBGPU_NANITE_VISBUFFER64
+
+// Tell stock NaniteWritePixel.ush that the platform supplies the 64-bit image-atomic op,
+// so it takes the real path instead of `#error UNKNOWN_ATOMIC_PLATFORM`.
+//
+// We deliberately do NOT define COMPILER_SUPPORTS_ULONG_TYPES: that would suppress the
+// Platform.ush fallback (`#ifndef COMPILER_SUPPORTS_ULONG_TYPES` → `UlongType = uint2`,
+// pass-through Pack/Unpack), which is exactly the (lo=payload, hi=depth) layout our cells
+// use. So UlongType stays uint2 and `PackUlongType(uint2(payload, depth))` is the identity
+// our ImageInterlockedMaxUInt64 below consumes. (Our prelude is included before the
+// fallback at Platform.ush, but our functions don't reference UlongType, so order is fine.)
+#define COMPILER_SUPPORTS_UINT64_IMAGE_ATOMICS 1
+
+// Bounded-retry count for the depth-slot CAS. WGSL gives no forward-progress guarantee,
+// so an unbounded spin can deadlock — cap it. Drops happen only under extreme per-texel
+// contention; TSR hides the residue.
+#ifndef WEBGPU_VISBUFFER64_MAX_RETRY
+#define WEBGPU_VISBUFFER64_MAX_RETRY 8u
+#endif
+
+// SELF-DESCRIBING BACKING BUFFER (no uniform-injection plumbing). For an Atomic64Compatible
+// texture the RHI allocates [ width | texel data... ] and writes the texture WIDTH (in
+// texels) into element 0 once at creation; the clear/raster passes only ever touch the
+// data region, so the header persists. Texel (x,y):
+//     t    = y * Dest[0] + x
+//     lo   = Dest[WEBGPU_VISBUFFER64_DATA + t*2]      (payload, packed as Value.x)
+//     hi   = Dest[WEBGPU_VISBUFFER64_DATA + t*2 + 1]  (depth,   packed as Value.y)
+// Reading width from Dest[0] makes every pass (clear, write, read) agree without needing
+// any shared bound uniform — see lumen-nanite-shared.md S11.1.
+#define WEBGPU_VISBUFFER64_DATA 1u   // element 0 is the width header
+
+uint WebGPUVisBuffer64Index(uint Width, uint2 Coord)
+{
+	return WEBGPU_VISBUFFER64_DATA + (Coord.y * Width + Coord.x) * 2u;
+}
+
+// Software ImageInterlockedMaxUInt64. The 64-bit max is dominated by the high word
+// (depth, packed by NaniteWritePixel.ush as Value.y), so we race to own the depth cell
+// then publish the payload. Not bit-exact: a strictly-nearer fragment interleaving
+// between our CAS-win and the payload store can have its payload clobbered (depth stays
+// correct). A bit-exact result needs a native WGSL 64-bit atomic, absent from this Dawn
+// snapshot — see lumen-nanite-shared.md S3/S11.1. v1 accepts the bounded residue.
+void ImageInterlockedMaxUInt64(RWStructuredBuffer<uint> Dest, uint2 Coord, uint2 Value)
+{
+	const uint Base       = WebGPUVisBuffer64Index(Dest[0], Coord);
+	const uint NewPayload = Value.x;
+	const uint NewDepth   = Value.y;
+
+	uint CurDepth = Dest[Base + 1u];
+	[loop]
+	for (uint Retry = 0u; Retry < WEBGPU_VISBUFFER64_MAX_RETRY; ++Retry)
+	{
+		// A nearer-or-equal fragment already owns this texel — nothing to do.
+		if (NewDepth <= CurDepth)
+		{
+			return;
+		}
+
+		uint PrevDepth;
+		InterlockedCompareExchange(Dest[Base + 1u], CurDepth, NewDepth, PrevDepth);
+		if (PrevDepth == CurDepth)
+		{
+			// Won the depth slot; publish payload (bounded race, see header note).
+			Dest[Base] = NewPayload;
+			return;
+		}
+		CurDepth = PrevDepth; // contended — retake with the newer depth and retry
+	}
+}
+
+// Read-side helper for the rewritten SRV: stock consumers do
+// `UnpackUlongType( OutVisBuffer64[ Position ] )`; the cooker maps the indexed read to
+// this, returning the (lo,hi) pair as the uint2 the fallback UnpackUlongType expects.
+uint2 WebGPUVisBuffer64Load(StructuredBuffer<uint> Src, uint2 Coord)
+{
+	const uint Base = WebGPUVisBuffer64Index(Src[0], Coord);
+	return uint2(Src[Base], Src[Base + 1u]);
+}
+
+// Clear-side helper (NaniteRasterClear.usf writes a full UlongType per texel): write the
+// (lo,hi) pair into the data region, leaving the width header (element 0) intact.
+void WebGPUVisBuffer64Store(RWStructuredBuffer<uint> Dest, uint2 Coord, uint2 Value)
+{
+	const uint Base = WebGPUVisBuffer64Index(Dest[0], Coord);
+	Dest[Base]      = Value.x;
+	Dest[Base + 1u] = Value.y;
+}
+
+#endif // WEBGPU_NANITE_VISBUFFER64

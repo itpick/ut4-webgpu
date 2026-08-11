@@ -1,0 +1,50 @@
+diff --git a/Source/UnrealTournamentEditor/Private/UTGPUBakeCommandlet.cpp b/Source/UnrealTournamentEditor/Private/UTGPUBakeCommandlet.cpp
+index 273d367..8eabe1c 100644
+--- a/Source/UnrealTournamentEditor/Private/UTGPUBakeCommandlet.cpp
++++ b/Source/UnrealTournamentEditor/Private/UTGPUBakeCommandlet.cpp
+@@ -9,7 +9,7 @@
+ // UE5-PORT(bake): GPULightmass is not linked on Mac or Windows (see
+ // UnrealTournamentEditor.Build.cs), so the bake body is compiled out there and the
+ // commandlet just reports that it is unavailable. Baking is done on the Linux host.
+-#if !PLATFORM_MAC && !PLATFORM_WINDOWS
++#if UT_WITH_GPULIGHTMASS
+ #include "GPULightmassSettings.h"
+ #endif
+ #include "Misc/CommandLine.h"
+@@ -27,7 +27,7 @@
+ 
+ DEFINE_LOG_CATEGORY_STATIC(LogUTGPUBake, Log, All);
+ 
+-#if PLATFORM_MAC || PLATFORM_WINDOWS
++#if !UT_WITH_GPULIGHTMASS
+ 
+ void UUTGPUBakeCommandlet::PerformAdditionalOperations(UWorld* World, bool& bSavePackage)
+ {
+diff --git a/Source/UnrealTournamentEditor/UnrealTournamentEditor.Build.cs b/Source/UnrealTournamentEditor/UnrealTournamentEditor.Build.cs
+index b462d10..b20f346 100755
+--- a/Source/UnrealTournamentEditor/UnrealTournamentEditor.Build.cs
++++ b/Source/UnrealTournamentEditor/UnrealTournamentEditor.Build.cs
+@@ -44,10 +44,22 @@ public class UnrealTournamentEditor : ModuleRules
+         // initialised. This killed Mac cooks first and then Windows cooks (2026-08-02, once a
+         // fresh Win64 editor link actually pulled the DLL in). Keep it Linux-bake-host only;
+         // the commandlet is compiled out to match (see UTGPUBakeCommandlet.cpp).
+-        if (Target.Platform != UnrealTargetPlatform.Mac && Target.Platform != UnrealTargetPlatform.Win64)
++        // UE5-PORT(webgpu): GPULightmass linkage is now an explicit OPT-IN (set UT_GPU_BAKE=1
++        // in the environment when running UBT on the Linux bake host). Linking it into the
++        // editor makes EVERY cook die in FShaderTypeRegistration
++        // ("Assertion failed: !AreShaderTypesInitialized()") because the module becomes an ELF
++        // NEEDED dep of this .so and its static initialisers run at Default loading phase,
++        // after shader-type init (the plugin is Win64-gated so it cannot load at
++        // PostConfigInit on Linux). Default (no env var) = cooks work, incl. the
++        // SimplyStream/WebGPU cook.
++        bool bWithGPULightmass =
++            Target.Platform != UnrealTargetPlatform.Mac && Target.Platform != UnrealTargetPlatform.Win64 &&
++            System.Environment.GetEnvironmentVariable("UT_GPU_BAKE") == "1";
++        if (bWithGPULightmass)
+         {
+             PublicDependencyModuleNames.Add("GPULightmass");
+         }
++        PublicDefinitions.Add(bWithGPULightmass ? "UT_WITH_GPULIGHTMASS=1" : "UT_WITH_GPULIGHTMASS=0");
+ 
+         if (!IsLicenseeBuild())
+         {

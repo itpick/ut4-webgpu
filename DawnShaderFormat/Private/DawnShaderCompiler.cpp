@@ -59,12 +59,20 @@ void CompileDawnShader(
 	ShaderConductor::ShaderStage Stage;
 	switch (Input.Target.Frequency)
 	{
-	case SF_Vertex:  Stage = ShaderConductor::ShaderStage::VertexShader; break;
-	case SF_Pixel:   Stage = ShaderConductor::ShaderStage::PixelShader;  break;
+	case SF_Vertex:  Stage = ShaderConductor::ShaderStage::VertexShader;  break;
+	case SF_Pixel:   Stage = ShaderConductor::ShaderStage::PixelShader;   break;
+	// Compute goes through the same real HLSL->SPIR-V->WGSL chain (DXC cs
+	// profile; tint emits @compute/@workgroup_size). Enabled 2026-08-11: the
+	// blanket rejection was the single largest global-shader failure class in
+	// the first full UT cook (most of the 198 SP_WEBGPU_ES31 global failures
+	// were CS types rejected sight-unseen). Real per-shader limitations
+	// (e.g. tint's SPIR-V reader lacking texel-buffer support) now surface as
+	// honest per-shader errors instead.
+	case SF_Compute: Stage = ShaderConductor::ShaderStage::ComputeShader;  break;
 	default:
 		Output.bSucceeded = false;
 		Output.Errors.Add(FShaderCompilerError(*FString::Printf(
-			TEXT("DawnShaderFormat: shader frequency %d not yet supported by the cook chain (only SF_Vertex/SF_Pixel today — compute/geometry/raytracing are tracked future work, see HANDOFF.md)"),
+			TEXT("DawnShaderFormat: shader frequency %d not supported (geometry has no WGSL equivalent; raytracing/mesh/task are tracked future work, see HANDOFF.md)"),
 			(int32)Input.Target.Frequency)));
 		return;
 	}
@@ -143,12 +151,38 @@ void CompileDawnShader(
 		EShaderParameterType ParamType;
 		switch (static_cast<EDawnReflectedBindingKind>(B.Kind))
 		{
-		case DawnBindingKind_UniformBuffer: ParamType = EShaderParameterType::UniformBuffer; break;
-		case DawnBindingKind_Texture:       ParamType = EShaderParameterType::SRV; break;
-		case DawnBindingKind_Sampler:       ParamType = EShaderParameterType::Sampler; break;
-		default: continue; // unclassified resource kind — do not fabricate a type
+		case DawnBindingKind_UniformBuffer:   ParamType = EShaderParameterType::UniformBuffer; break;
+		case DawnBindingKind_Texture:         ParamType = EShaderParameterType::SRV; break;
+		case DawnBindingKind_Sampler:         ParamType = EShaderParameterType::Sampler; break;
+		case DawnBindingKind_StorageBufferRO: ParamType = EShaderParameterType::SRV; break;
+		case DawnBindingKind_StorageBufferRW: ParamType = EShaderParameterType::UAV; break;
+		case DawnBindingKind_StorageImage:    ParamType = EShaderParameterType::UAV; break;
+		default: continue; // unclassified resource kind - do not fabricate a type
 		}
 		Output.ParameterMap.AddParameterAllocation(ANSI_TO_TCHAR(B.Name), (uint16)B.Set, (uint16)B.Binding, 1, ParamType);
+	}
+
+	// Member-level entries for the DXC loose-global block ("$Globals" -- where
+	// legacy FShaderParameter loose parameters land). FShaderParameter::Bind
+	// looks these up by member name and FATALS on any missing non-optional one
+	// ("Failure to bind non-optional shader parameter ClipRef", seen live on
+	// FSimpleElementMaskedGammaPS in the first full UT cook, 2026-08-11).
+	// BufferIndex = the $Globals buffer's own @binding slot; BaseIndex = real
+	// member byte offset; Size = real member byte size (see dawn_tint_bridge's
+	// $Globals member reflection).
+	if (BridgeResult.GlobalsBinding >= 0)
+	{
+		for (uint32 i = 0; i < BridgeResult.NumLooseMembers; ++i)
+		{
+			const FDawnReflectedLooseMember& M = BridgeResult.LooseMembers[i];
+			if (M.Name[0] == '\0')
+			{
+				continue;
+			}
+			Output.ParameterMap.AddParameterAllocation(ANSI_TO_TCHAR(M.Name),
+				(uint16)BridgeResult.GlobalsBinding, (uint16)M.ByteOffset, (uint16)M.ByteSize,
+				EShaderParameterType::LooseData);
+		}
 	}
 
 	Output.Target = Input.Target;

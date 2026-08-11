@@ -18,9 +18,14 @@
 #include "src/tint/lang/core/ir/module.h"
 
 #include <algorithm>
+#include <csetjmp>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
+#include <map>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -134,7 +139,21 @@ namespace
 		EDawnReflectedBindingKind Kind = DawnBindingKind_Unknown;
 	};
 
-	std::vector<FBinding> ReflectBindings(const std::vector<uint32_t>& Spirv, std::string& OutDisassemblyError)
+	struct FLooseMember
+	{
+		std::string Name;
+		unsigned Offset = 0;
+		unsigned Size = 0;
+	};
+	struct FGlobalsInfo
+	{
+		bool bFound = false;
+		int Set = -1;
+		int Binding = -1;
+		std::vector<FLooseMember> Members;
+	};
+
+	std::vector<FBinding> ReflectBindings(const std::vector<uint32_t>& Spirv, std::string& OutDisassemblyError, FGlobalsInfo* OutGlobals = nullptr)
 	{
 		spvtools::SpirvTools Tools(SPV_ENV_VULKAN_1_1);
 		std::string Text;
@@ -162,6 +181,18 @@ namespace
 		std::unordered_map<std::string, std::vector<std::string>> DefById;
 		// Which struct type ids are Block-decorated (real uniform-buffer marker).
 		std::unordered_map<std::string, bool> BlockDecoratedType;
+		// BufferBlock-decorated struct types (legacy SPIR-V storage buffers)
+		// and NonWritable-decorated variables (read-only storage buffers, i.e.
+		// HLSL StructuredBuffer/ByteAddressBuffer SRVs).
+		std::unordered_map<std::string, bool> BufferBlockDecoratedType;
+		std::unordered_map<std::string, bool> NonWritableVar;
+		// Member-level info per struct type id (for $Globals loose-parameter
+		// reflection): real OpMemberName text + OpMemberDecorate Offset,
+		// keyed/ordered by member index; plus OpDecorate ArrayStride for
+		// array-size derivation of the final member.
+		std::unordered_map<std::string, std::map<int, std::string>> MemberNamesByType;
+		std::unordered_map<std::string, std::map<int, unsigned>> MemberOffsetsByType;
+		std::unordered_map<std::string, unsigned> ArrayStrideByType;
 
 		std::istringstream Stream(Text);
 		std::string Line;
@@ -178,7 +209,23 @@ namespace
 			{
 				continue;
 			}
-			if (Tokens[0] == "OpName" && Tokens.size() >= 3)
+			if (Tokens[0] == "OpMemberName" && Tokens.size() >= 4)
+			{
+				std::string NameLiteral;
+				for (size_t i = 3; i < Tokens.size(); ++i)
+				{
+					if (i > 3) NameLiteral += " ";
+					NameLiteral += Tokens[i];
+				}
+				if (!NameLiteral.empty() && NameLiteral.front() == '"') NameLiteral.erase(0, 1);
+				if (!NameLiteral.empty() && NameLiteral.back() == '"') NameLiteral.pop_back();
+				MemberNamesByType[Tokens[1]][std::atoi(Tokens[2].c_str())] = NameLiteral;
+			}
+			else if (Tokens[0] == "OpMemberDecorate" && Tokens.size() >= 5 && Tokens[3] == "Offset")
+			{
+				MemberOffsetsByType[Tokens[1]][std::atoi(Tokens[2].c_str())] = (unsigned)std::atoi(Tokens[4].c_str());
+			}
+			else if (Tokens[0] == "OpName" && Tokens.size() >= 3)
 			{
 				std::string NameLiteral;
 				for (size_t i = 2; i < Tokens.size(); ++i)
@@ -211,6 +258,18 @@ namespace
 				else if (Tokens[2] == "Block")
 				{
 					BlockDecoratedType[Tokens[1]] = true;
+				}
+				else if (Tokens.size() >= 4 && Tokens[2] == "ArrayStride")
+				{
+					ArrayStrideByType[Tokens[1]] = (unsigned)std::atoi(Tokens[3].c_str());
+				}
+				else if (Tokens[2] == "BufferBlock")
+				{
+					BufferBlockDecoratedType[Tokens[1]] = true;
+				}
+				else if (Tokens[2] == "NonWritable")
+				{
+					NonWritableVar[Tokens[1]] = true;
 				}
 			}
 			else if (Tokens.size() >= 3 && Tokens[1] == "=" && !Tokens[0].empty() && Tokens[0][0] == '%')
@@ -254,7 +313,12 @@ namespace
 
 			if (BaseOp == "OpTypeImage")
 			{
-				B.Kind = DawnBindingKind_Texture;
+				// OpTypeImage operands: %id = OpTypeImage %sampledType Dim
+				// depth arrayed MS Sampled format -- Sampled==2 marks a
+				// storage image (HLSL RWTexture*), Sampled==1 a sampled one.
+				const std::vector<std::string>& ImgTokens = BaseIt->second;
+				const bool bStorageImage = ImgTokens.size() >= 9 && ImgTokens[8] == "2";
+				B.Kind = bStorageImage ? DawnBindingKind_StorageImage : DawnBindingKind_Texture;
 			}
 			else if (BaseOp == "OpTypeSampler")
 			{
@@ -264,6 +328,11 @@ namespace
 			{
 				B.Kind = DawnBindingKind_UniformBuffer;
 			}
+			else if (BaseOp == "OpTypeStruct" &&
+				(StorageClass == "StorageBuffer" || (StorageClass == "Uniform" && BufferBlockDecoratedType[BaseTypeId])))
+			{
+				B.Kind = NonWritableVar[Pair.first] ? DawnBindingKind_StorageBufferRO : DawnBindingKind_StorageBufferRW;
+			}
 			if (bDebug) { std::fprintf(stderr, "  -> BaseOp=%s StorageClass=%s BlockDecorated=%d Kind=%d\n", BaseOp.c_str(), StorageClass.c_str(), (int)BlockDecoratedType[BaseTypeId], (int)B.Kind); }
 		}
 		if (bDebug)
@@ -271,6 +340,111 @@ namespace
 			int32_t FinalCount = 0;
 			for (auto& Pair : ByIdOrdered) { if (Pair.second.Set >= 0 || Pair.second.Binding >= 0) { ++FinalCount; } }
 			std::fprintf(stderr, "[reflect] final candidate count (Set>=0||Binding>=0) = %d\n", FinalCount);
+		}
+
+		// Member-level reflection of the DXC loose-global block "$Globals"
+		// (where HLSL file-scope globals -- UE's legacy FShaderParameter loose
+		// parameters -- land). UE requires per-member LooseData parameter-map
+		// entries or FShaderParameter::Bind fatals on every non-optional loose
+		// parameter. Sizes: next-offset delta (layout-true, padding included);
+		// last member: derived from its SPIR-V type (scalar/vector/matrix/
+		// array via ArrayStride), 16-byte fallback.
+		if (OutGlobals)
+		{
+			// Recursive-ish type-size helper over the token table.
+			std::function<unsigned(const std::string&)> TypeSize = [&](const std::string& TypeId) -> unsigned
+			{
+				auto It = DefById.find(TypeId);
+				if (It == DefById.end() || It->second.size() < 3) return 0;
+				const std::vector<std::string>& T = It->second;
+				const std::string& Op = T[2];
+				if (Op == "OpTypeFloat" || Op == "OpTypeInt")
+				{
+					return T.size() >= 4 ? (unsigned)std::atoi(T[3].c_str()) / 8u : 4u;
+				}
+				if (Op == "OpTypeVector")
+				{
+					return T.size() >= 5 ? TypeSize(T[3]) * (unsigned)std::atoi(T[4].c_str()) : 0u;
+				}
+				if (Op == "OpTypeMatrix")
+				{
+					// DXC cbuffer layout: 16-byte column stride.
+					if (T.size() < 5) return 0u;
+					unsigned Col = TypeSize(T[3]);
+					Col = ((Col + 15u) / 16u) * 16u;
+					return Col * (unsigned)std::atoi(T[4].c_str());
+				}
+				if (Op == "OpTypeArray")
+				{
+					if (T.size() < 5) return 0u;
+					unsigned Stride = ArrayStrideByType.count(TypeId) ? ArrayStrideByType[TypeId] : TypeSize(T[3]);
+					unsigned Len = 0;
+					auto CIt = DefById.find(T[4]);
+					if (CIt != DefById.end() && CIt->second.size() >= 5 && CIt->second[2] == "OpConstant")
+					{
+						Len = (unsigned)std::atoi(CIt->second[4].c_str());
+					}
+					return Stride * Len;
+				}
+				return 0u;
+			};
+
+			for (auto& Pair : ByIdOrdered)
+			{
+				FBinding& B = Pair.second;
+				if (B.Kind != DawnBindingKind_UniformBuffer) continue;
+				if (B.Name != "$Globals" && B.Name != "_Globals") continue;
+
+				// Re-walk OpVariable -> OpTypePointer -> struct type id.
+				auto VarIt = DefById.find(Pair.first);
+				if (VarIt == DefById.end() || VarIt->second.size() < 5) continue;
+				auto PtrIt = DefById.find(VarIt->second[3]);
+				if (PtrIt == DefById.end() || PtrIt->second.size() < 5) continue;
+				const std::string& StructTypeId = PtrIt->second[4];
+
+				const std::map<int, std::string>& Names = MemberNamesByType[StructTypeId];
+				const std::map<int, unsigned>& Offsets = MemberOffsetsByType[StructTypeId];
+				auto StructIt = DefById.find(StructTypeId);
+
+				OutGlobals->bFound = true;
+				OutGlobals->Set = B.Set;
+				OutGlobals->Binding = B.Binding;
+
+				for (auto It = Names.begin(); It != Names.end(); ++It)
+				{
+					const int Idx = It->first;
+					FLooseMember M;
+					M.Name = It->second;
+					auto OffIt = Offsets.find(Idx);
+					M.Offset = OffIt != Offsets.end() ? OffIt->second : 0u;
+					// Size must be the member's REAL type size (no trailing
+					// cbuffer padding): UE's FShaderParameterStructBindingContext
+					// ::Bind FATALS when the reported size exceeds the C++
+					// member's size ("...is 12 bytes, smaller than EOTF's 4
+					// bytes" seen live when this used next-offset deltas, which
+					// include padding). Next-offset delta is only the fallback
+					// when the type walk fails, capped at 16 to never exceed a
+					// register; then 16.
+					unsigned FromType = 0;
+					if (StructIt != DefById.end() && StructIt->second.size() > (size_t)(3 + Idx))
+					{
+						FromType = TypeSize(StructIt->second[3 + Idx]);
+					}
+					if (FromType)
+					{
+						M.Size = FromType;
+					}
+					else
+					{
+						auto NextOffIt = Offsets.upper_bound(Idx);
+						unsigned Delta = (NextOffIt != Offsets.end() && NextOffIt->second > M.Offset) ? NextOffIt->second - M.Offset : 0u;
+						M.Size = Delta ? (Delta < 16u ? Delta : 16u) : 16u;
+					}
+					if (bDebug) { std::fprintf(stderr, "[reflect] $Globals member idx=%d name=%s offset=%u size=%u\n", Idx, M.Name.c_str(), M.Offset, M.Size); }
+					OutGlobals->Members.push_back(std::move(M));
+				}
+				break; // one $Globals block per shader
+			}
 		}
 
 		std::vector<FBinding> Bindings;
@@ -310,7 +484,77 @@ namespace
 	}
 }
 
-extern "C" FDawnTintCookResult Dawn_LegalizeAndCookSpirvToWgsl(const unsigned int* SpirvWords, unsigned int SpirvWordCount)
+
+namespace
+{
+	// --- Crash guard --------------------------------------------------------
+	// tint reports internal compiler errors (TINT_ICE / TINT_ASSERT /
+	// TINT_UNREACHABLE) by printing a banner to stderr and then
+	// __builtin_trap()'ing (SIGILL) -- see src/tint/utils/ice/ice.cc. This tint
+	// snapshot has NO global ICE-callback registration (the per-callsite
+	// callback parameter is not reachable from the public reader/writer entry
+	// points), and spirv-tools can likewise assert() -> SIGABRT. In-process
+	// that kills the entire cook: verified live 2026-08-11 (cook13 died on
+	// signal 4 from "scalar.h:59 TINT_ASSERT(std::isfinite(v.value))" and
+	// "parser.cc:785 Unsupported texture dimension: 5" while compiling the UT
+	// global shader map). Convert such crashes into per-shader compile
+	// failures instead: lazily install chained signal handlers; when a guarded
+	// call crashes, siglongjmp back and report Success=0 with the signal
+	// number (the tint ICE banner naming the exact assert still lands on
+	// stderr, i.e. in the cook/worker log, for failure-mode bucketing).
+	// Thread-local guard state keeps concurrent shader-compile threads
+	// independent; crashes on non-guarded threads (or outside the guarded
+	// call) restore + re-raise so the host's own crash handling runs.
+	// Deliberate tradeoff: longjmp'ing out of a trap skips unwinding, so a
+	// crashed compile may leak a few allocations -- acceptable for a cook.
+	thread_local sigjmp_buf GCrashJmp;
+	thread_local volatile sig_atomic_t GCrashGuardActive = 0;
+	thread_local volatile sig_atomic_t GCrashSignal = 0;
+
+	constexpr int GGuardedSignals[] = { SIGILL, SIGABRT, SIGSEGV, SIGBUS, SIGFPE };
+	constexpr size_t GNumGuardedSignals = sizeof(GGuardedSignals) / sizeof(GGuardedSignals[0]);
+	struct sigaction GPrevActions[GNumGuardedSignals];
+
+	void CrashGuardHandler(int Sig)
+	{
+		if (GCrashGuardActive)
+		{
+			GCrashSignal = Sig;
+			siglongjmp(GCrashJmp, 1);
+		}
+		// Not a guarded tint/spirv-tools call: put the previous handler back
+		// and re-raise (blocked until we return, or re-faults for SEGV/ILL)
+		// so the engine's crash handler still owns real crashes.
+		for (size_t i = 0; i < GNumGuardedSignals; ++i)
+		{
+			if (GGuardedSignals[i] == Sig)
+			{
+				sigaction(Sig, &GPrevActions[i], nullptr);
+				break;
+			}
+		}
+		raise(Sig);
+	}
+
+	void InstallCrashGuardOnce()
+	{
+		static std::once_flag OnceFlag;
+		std::call_once(OnceFlag, []()
+		{
+			struct sigaction SA;
+			std::memset(&SA, 0, sizeof(SA));
+			SA.sa_handler = CrashGuardHandler;
+			sigemptyset(&SA.sa_mask);
+			SA.sa_flags = SA_ONSTACK; // ride the host's per-thread altstack if present
+			for (size_t i = 0; i < GNumGuardedSignals; ++i)
+			{
+				sigaction(GGuardedSignals[i], &SA, &GPrevActions[i]);
+			}
+		});
+	}
+}
+
+static FDawnTintCookResult DawnLegalizeAndCookImpl(const unsigned int* SpirvWords, unsigned int SpirvWordCount)
 {
 	FDawnTintCookResult Out = {};
 
@@ -332,7 +576,8 @@ extern "C" FDawnTintCookResult Dawn_LegalizeAndCookSpirvToWgsl(const unsigned in
 	// `View` declares ~100 individually-bound resources; only the handful
 	// an actual shader uses should survive to be reported/bound).
 	std::string DisassemblyError;
-	std::vector<FBinding> ReflectedBindings = ReflectBindings(Spirv, DisassemblyError);
+	FGlobalsInfo Globals;
+	std::vector<FBinding> ReflectedBindings = ReflectBindings(Spirv, DisassemblyError, &Globals);
 	std::string ReflectionSummary = DisassemblyError.empty() ? SummarizeBindings(ReflectedBindings) : DisassemblyError;
 
 	// Debug aid (env-var gated): dump the post-legalization, pre-strip
@@ -369,6 +614,23 @@ extern "C" FDawnTintCookResult Dawn_LegalizeAndCookSpirvToWgsl(const unsigned in
 	Out.Wgsl = DupToMalloc(Wgsl, Out.WgslLen);
 	Out.Diagnostic = DupToMalloc(ReflectionSummary, Out.DiagnosticLen);
 
+	Out.GlobalsSet = Globals.bFound ? Globals.Set : -1;
+	Out.GlobalsBinding = Globals.bFound ? Globals.Binding : -1;
+	Out.NumLooseMembers = static_cast<unsigned int>(Globals.Members.size());
+	if (Out.NumLooseMembers > 0)
+	{
+		Out.LooseMembers = static_cast<FDawnReflectedLooseMember*>(std::malloc(sizeof(FDawnReflectedLooseMember) * Out.NumLooseMembers));
+		for (unsigned int i = 0; i < Out.NumLooseMembers; ++i)
+		{
+			const FLooseMember& Src = Globals.Members[i];
+			FDawnReflectedLooseMember& Dst = Out.LooseMembers[i];
+			Dst.ByteOffset = Src.Offset;
+			Dst.ByteSize = Src.Size;
+			std::memset(Dst.Name, 0, sizeof(Dst.Name));
+			std::strncpy(Dst.Name, Src.Name.c_str(), sizeof(Dst.Name) - 1);
+		}
+	}
+
 	Out.NumBindings = static_cast<unsigned int>(ReflectedBindings.size());
 	if (std::getenv("DAWN_DEBUG_REFLECT")) { std::fprintf(stderr, "[reflect] Dawn_LegalizeAndCookSpirvToWgsl: ReflectedBindings.size()=%zu\n", ReflectedBindings.size()); }
 	if (Out.NumBindings > 0)
@@ -389,14 +651,43 @@ extern "C" FDawnTintCookResult Dawn_LegalizeAndCookSpirvToWgsl(const unsigned in
 	return Out;
 }
 
+extern "C" FDawnTintCookResult Dawn_LegalizeAndCookSpirvToWgsl(const unsigned int* SpirvWords, unsigned int SpirvWordCount)
+{
+	InstallCrashGuardOnce();
+
+	GCrashSignal = 0;
+	if (sigsetjmp(GCrashJmp, 1) == 0)
+	{
+		GCrashGuardActive = 1;
+		FDawnTintCookResult Out = DawnLegalizeAndCookImpl(SpirvWords, SpirvWordCount);
+		GCrashGuardActive = 0;
+		return Out;
+	}
+
+	// A guarded tint/spirv-tools call crashed; report it as a per-shader
+	// compile failure instead of taking the whole cook process down.
+	GCrashGuardActive = 0;
+	FDawnTintCookResult Crash = {};
+	Crash.Success = 0;
+	Crash.GlobalsSet = -1;
+	Crash.GlobalsBinding = -1;
+	std::string Msg = "tint/spirv-tools INTERNAL COMPILER CRASH (signal " + std::to_string((int)GCrashSignal)
+		+ ") captured by dawn_tint_bridge crash guard; see the tint ICE banner on stderr for the exact assert";
+	Crash.Diagnostic = DupToMalloc(Msg, Crash.DiagnosticLen);
+	return Crash;
+}
+
 extern "C" void Dawn_FreeTintCookResult(FDawnTintCookResult* Result)
 {
 	if (!Result) return;
 	std::free(Result->Wgsl);
 	std::free(Result->Diagnostic);
 	std::free(Result->Bindings);
+	std::free(Result->LooseMembers);
 	Result->Wgsl = nullptr;
 	Result->Diagnostic = nullptr;
 	Result->Bindings = nullptr;
 	Result->NumBindings = 0;
+	Result->LooseMembers = nullptr;
+	Result->NumLooseMembers = 0;
 }

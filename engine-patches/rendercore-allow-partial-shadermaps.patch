@@ -1,0 +1,25 @@
+diff --git a/Engine/Source/Runtime/RenderCore/Private/ShaderMap.cpp b/Engine/Source/Runtime/RenderCore/Private/ShaderMap.cpp
+index 578bdb3e5..cd21a2945 100644
+--- a/Engine/Source/Runtime/RenderCore/Private/ShaderMap.cpp
++++ b/Engine/Source/Runtime/RenderCore/Private/ShaderMap.cpp
+@@ -804,8 +804,20 @@ void FShaderMapContent::GetShaderPipelineList(const FShaderMapBase& InShaderMap,
+ 
+ void FShaderMapContent::Validate(const FShaderMapBase& InShaderMap) const
+ {
++	// UE5-PORT(webgpu measurement): -AllowPartialShaderMaps demotes the
++	// missing-resource check to an Error log so an experimental cook whose
++	// shader format cannot yet compile every shader (e.g. the open WebGPU/
++	// Dawn format) can proceed far enough to produce complete survival
++	// statistics instead of dying on the first incomplete shader map. The
++	// resulting cooked map is NOT shippable; default behavior is unchanged.
++	static const bool bAllowPartialShaderMaps = FParse::Param(FCommandLine::Get(), TEXT("AllowPartialShaderMaps"));
+ 	for (const FShader* Shader : Shaders)
+ 	{
++		if (bAllowPartialShaderMaps && Shader->GetResourceIndex() == INDEX_NONE)
++		{
++			UE_LOGF(LogShaders, Error, "Missing resource for %ls (continuing: -AllowPartialShaderMaps)", Shader->GetType(InShaderMap.GetPointerTable())->GetName());
++			continue;
++		}
+ 		checkf(Shader->GetResourceIndex() != INDEX_NONE, TEXT("Missing resource for %s"), Shader->GetType(InShaderMap.GetPointerTable())->GetName());
+ 	}
+ 

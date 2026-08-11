@@ -61,6 +61,15 @@ typedef enum EDawnReflectedBindingKind
 	DawnBindingKind_UniformBuffer = 1,
 	DawnBindingKind_Texture = 2,
 	DawnBindingKind_Sampler = 3,
+	// Storage resources (2026-08-11): required for compute (and any VS/PS
+	// using StructuredBuffer SRVs). Without these every UAV/structured-buffer
+	// parameter was classified Unknown, skipped from the parameter map, and
+	// UE fataled with "Failure to bind non-optional shader resource parameter"
+	// (seen live on TClearReplacementCS's ClearResource in the first
+	// compute-enabled UT cook).
+	DawnBindingKind_StorageBufferRW = 4, // HLSL RW*Buffer -> SPIR-V StorageBuffer/BufferBlock, writable
+	DawnBindingKind_StorageBufferRO = 5, // HLSL StructuredBuffer/ByteAddressBuffer SRV (NonWritable)
+	DawnBindingKind_StorageImage = 6,    // HLSL RWTexture* -> OpTypeImage Sampled=2
 } EDawnReflectedBindingKind;
 
 typedef struct FDawnReflectedBinding
@@ -70,6 +79,13 @@ typedef struct FDawnReflectedBinding
 	unsigned int Kind; // EDawnReflectedBindingKind
 	char Name[128];    // real SPIR-V OpName text, truncated; always NUL-terminated
 } FDawnReflectedBinding;
+
+typedef struct FDawnReflectedLooseMember
+{
+	unsigned int ByteOffset; // real OpMemberDecorate Offset (DXC cbuffer layout)
+	unsigned int ByteSize;   // next-offset delta; last member: derived from its SPIR-V type
+	char Name[128];          // real OpMemberName text, truncated; always NUL-terminated
+} FDawnReflectedLooseMember;
 
 typedef struct FDawnTintCookResult
 {
@@ -92,6 +108,22 @@ typedef struct FDawnTintCookResult
 	// shader that binds no resources (e.g. NullPixelShader.usf).
 	FDawnReflectedBinding* Bindings;
 	unsigned int NumBindings;
+
+	// On success: member-level reflection of the DXC loose-global uniform
+	// buffer ("$Globals" -- where HLSL file-scope globals like UE's legacy
+	// FShaderParameter loose parameters land). Each entry is one member with
+	// its real std140/DXC cbuffer byte offset (from OpMemberDecorate Offset)
+	// and size (next-offset delta; last member from its SPIR-V type). UE's
+	// FShaderParameter::Bind requires these as LooseData parameter-map
+	// entries -- without them every non-optional loose parameter fatals with
+	// "Failure to bind non-optional shader parameter X" (seen live 2026-08-11
+	// on FSimpleElementMaskedGammaPS's ClipRef in the first full UT cook).
+	// GlobalsSet/GlobalsBinding give the $Globals buffer's own set/binding
+	// (-1 if the shader has no $Globals block; then NumLooseMembers==0).
+	FDawnReflectedLooseMember* LooseMembers;
+	unsigned int NumLooseMembers;
+	int GlobalsSet;
+	int GlobalsBinding;
 } FDawnTintCookResult;
 
 // Full pipeline stage 2+3: legalized-SPIR-V-eligible input (still has
