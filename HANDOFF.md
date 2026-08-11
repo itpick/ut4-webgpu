@@ -2308,6 +2308,8 @@ under the nix cook-shell (`/mnt/models/ss-build/ue-cook-shell.nix`). `ShaderComp
 | SP_WEBGPU_SM5 global shaders FAILED | 2,457 | **1,381** (-44%) |
 | material shader maps FAILED @ ~2,400/8,158 pkgs | 584 SM5 + 658 ES31 (≈ every map on both platforms) | **28 SM5 + 66 ES31**, and sampled failures are material-translator/content errors (`MakeMaterialAttributes` node errors), not compile-chain |
 
+Cook23 (all fixes) material-phase classification, verified from the raw log: at 2,072/8,157 packages it had **0 SM5 material failures and 24 ES31**, and every inspected ES31 failure is a FEATURE-LEVEL CONTENT error — e.g. `(Function MF_Dirt) (Node PrecomputedAOMask) Node not supported in feature level ES3_1. SM5 required.` — i.e. it would fail identically on any real ES3.1 platform (Android/Vulkan). Compile-chain material survival is effectively 100% at that depth. cook23 was left running to completion; final totals: `bash /tmp/final_stats.sh /mnt/models/ss-build/cook23.log` on framepick.
+
 Baseline dominant causes (bucketed from cook20's log): texel buffers — HLSL `Buffer<T>`/`RWBuffer<T>` -> SPIR-V Dim=Buffer -> tint reader ICE "Unsupported texture dimension: 5" (~5,100 banners; every SM5 manual-vertex-fetch material VS, every ES31 GPUScene access, most CS); read-write storage textures rejected as a WGSL language feature (~750); non-finite float constants (`TINT_ASSERT(std::isfinite)`, 642); switch fallthrough in tint's SPIR-V reader (774); `template` keyword = CFLAG_HLSL2021 shaders forced to -HV 2018 (~60); `EarlyFragmentTests` unsupported in WGSL (178); wave/subgroup ops; 16-bit types (TSR).
 
 Fixes that produced the improvement (all committed to `dawnrhi-stage1`):
