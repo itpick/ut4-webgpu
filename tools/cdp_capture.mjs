@@ -1,9 +1,12 @@
 // Minimal CDP driver (no puppeteer/playwright dependency): launches headless
 // Chrome with --remote-debugging-port, opens a target page via the HTTP
 // /json/new endpoint, connects to its devtools websocket, enables
-// Page+Runtime domains, navigates, and collects Runtime.consoleAPICalled
-// messages for N seconds, then prints them and exits. Node 22+ has a
-// built-in global WebSocket + fetch, so no npm deps needed.
+// Page+Runtime+Network+Log domains, navigates, and STREAMS
+// Runtime.consoleAPICalled / Log.entryAdded / network-failure messages to
+// stdout AS THEY ARRIVE (so a redirected log file can be polled live instead
+// of only appearing after the full wait elapses), then also prints the full
+// buffered transcript at the end for convenience. Node 22+ has a built-in
+// global WebSocket + fetch, so no npm deps needed.
 import { spawn } from 'node:child_process';
 
 const CHROME = process.argv[2];
@@ -33,8 +36,18 @@ const finalArgs = process.env.NO_ANGLE_VULKAN
   ? args.filter(a => a !== '--use-angle=vulkan' && a !== '--use-gl=angle')
   : args;
 
+function ts() {
+  return new Date().toISOString().split('T')[1].replace('Z', '');
+}
+
+function emit(line) {
+  // Timestamped + flushed immediately so a tailing/polling reader sees
+  // progress in real time, not just at process exit.
+  process.stdout.write(`[${ts()}] ${line}\n`);
+}
+
 console.error('Launching: ' + CHROME + ' ' + finalArgs.join(' '));
-const chrome = spawn(CHROME, finalArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+const chrome = spawn(CHROME, finalArgs, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env });
 chrome.stdout.on('data', d => process.stderr.write('[chrome stdout] ' + d));
 chrome.stderr.on('data', d => process.stderr.write('[chrome stderr] ' + d));
 
@@ -61,9 +74,9 @@ async function main() {
   console.error('Target ws: ' + wsUrl);
 
   const ws = new WebSocket(wsUrl);
-  const messages = [];
   let msgId = 1;
   const pending = new Map();
+  const requestUrls = new Map(); // requestId -> url, for correlating failures
 
   function send(method, params = {}) {
     const id = msgId++;
@@ -85,26 +98,50 @@ async function main() {
       pending.delete(msg.id);
       return;
     }
-    if (msg.method === 'Runtime.consoleAPICalled') {
-      const text = (msg.params.args || []).map(a => a.value !== undefined ? a.value : (a.description || '')).join(' ');
-      messages.push(`[console.${msg.params.type}] ${text}`);
-    } else if (msg.method === 'Runtime.exceptionThrown') {
-      messages.push(`[exception] ${JSON.stringify(msg.params.exceptionDetails)}`);
-    } else if (msg.method === 'Log.entryAdded') {
-      messages.push(`[log.${msg.params.entry.level}] ${msg.params.entry.text}`);
+    switch (msg.method) {
+      case 'Runtime.consoleAPICalled': {
+        const text = (msg.params.args || []).map(a => a.value !== undefined ? a.value : (a.description || '')).join(' ');
+        emit(`[console.${msg.params.type}] ${text}`);
+        break;
+      }
+      case 'Runtime.exceptionThrown': {
+        emit(`[exception] ${JSON.stringify(msg.params.exceptionDetails)}`);
+        break;
+      }
+      case 'Log.entryAdded': {
+        const e = msg.params.entry;
+        emit(`[log.${e.level}] ${e.text}${e.url ? ' url=' + e.url : ''}`);
+        break;
+      }
+      case 'Network.requestWillBeSent': {
+        requestUrls.set(msg.params.requestId, msg.params.request.url);
+        break;
+      }
+      case 'Network.responseReceived': {
+        const st = msg.params.response.status;
+        if (st >= 400) {
+          emit(`[network.FAIL ${st}] ${msg.params.response.url}`);
+        }
+        break;
+      }
+      case 'Network.loadingFailed': {
+        const url = requestUrls.get(msg.params.requestId) || '(unknown url)';
+        emit(`[network.loadingFailed] ${url} :: ${msg.params.errorText}${msg.params.canceled ? ' (canceled)' : ''}`);
+        break;
+      }
     }
   });
 
   await send('Runtime.enable');
   await send('Log.enable');
+  await send('Network.enable');
   await send('Page.enable');
+  emit(`--- navigating to ${URL} ---`);
   await send('Page.navigate', { url: URL });
 
   await sleep(WAIT_MS);
 
-  console.log('===== CAPTURED CONSOLE OUTPUT =====');
-  for (const m of messages) console.log(m);
-  console.log('===== END (' + messages.length + ' messages) =====');
+  emit('--- wait elapsed, exiting ---');
 
   ws.close();
   chrome.kill('SIGKILL');

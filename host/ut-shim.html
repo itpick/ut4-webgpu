@@ -13,9 +13,14 @@ var Module = {
   printErr:function(t){ console.error(t); },
   locateFile: function(p, pre){ return (pre||"") + p; },
   onAbort: function(w){ console.error("ABORT: " + w); },
+  setStatus: function(t){ if (t) console.log("STATUS: " + t); },
   onRuntimeInitialized: function(){ console.log("*** onRuntimeInitialized — wasm instantiated ***"); },
 };
-window.onerror = function(m){ console.error("window.onerror: " + m); };
+window.onerror = function(m, src, line, col, err){ console.error("window.onerror: " + m + " @ " + src + ":" + line + (err && err.stack ? "\n" + err.stack : "")); };
+window.addEventListener("unhandledrejection", function(e){ console.error("unhandledrejection: " + (e.reason && (e.reason.stack || e.reason.message || e.reason) || e.reason)); });
+// Heartbeat so a polled console log shows liveness even if the engine itself is silent.
+var __t0 = Date.now();
+setInterval(function(){ console.log("[heartbeat] t+" + Math.round((Date.now()-__t0)/1000) + "s"); }, 15000);
 </script>
 <script async src="UnrealTournament.js"></script>
 </body></html>
