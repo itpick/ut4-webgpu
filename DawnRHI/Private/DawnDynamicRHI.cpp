@@ -59,10 +59,12 @@ FDawnDynamicRHI::~FDawnDynamicRHI()
 
 void FDawnDynamicRHI::InitDawnDevice()
 {
+#if !DAWNRHI_WASM
 	// Static linking of Dawn native requires installing the proc table
 	// ourselves — standard documented Dawn native usage (dawn/native/DawnNative.h),
 	// not anything SimplyStream-specific.
 	dawnProcSetProcs(&dawn::native::GetProcs());
+#endif
 
 	// Dawn requires explicitly opting in to finite-timeout wgpuInstanceWaitAny()
 	// calls via the TimedWaitAny instance feature (an unrequested instance
@@ -70,16 +72,35 @@ void FDawnDynamicRHI::InitDawnDevice()
 	// finite polling waits fail with "Timeout waits are either not enabled
 	// or not supported"). We poll with short finite timeouts throughout this
 	// module (buffer-map / queue-idle waits), so request it up front.
+	//
+	// DAWNRHI_WASM: emdawnwebgpu's instance does not support requesting
+	// TimedWaitAny (DawnRHIWasmProbe's real_shader_wasm.cpp never requests
+	// it and never calls wgpuInstanceWaitAny at all — it is purely
+	// callback/event-loop driven, matching how every other wasm WebGPU
+	// binding works: JS promises only resolve between synchronous C/wasm
+	// calls yielding control back to the browser event loop, so a spin-wait
+	// inside wasm code would block that very event loop and deadlock
+	// instead of ever seeing the callback fire). Left unrequested here.
+#if DAWNRHI_WASM
+	WGPUInstanceDescriptor InstanceDesc = {};
+#else
 	WGPUInstanceFeatureName RequiredFeatures[] = { WGPUInstanceFeatureName_TimedWaitAny };
 	WGPUInstanceDescriptor InstanceDesc = {};
 	InstanceDesc.requiredFeatureCount = 1;
 	InstanceDesc.requiredFeatures = RequiredFeatures;
+#endif
 	Instance = wgpuCreateInstance(&InstanceDesc);
 	checkf(Instance, TEXT("DawnRHI: wgpuCreateInstance failed"));
 
 	WGPURequestAdapterOptions AdapterOpts = {};
 	AdapterOpts.powerPreference = WGPUPowerPreference_HighPerformance;
+#if !DAWNRHI_WASM
+	// The browser's WebGPU implementation picks its own backend (Vulkan/
+	// Metal/D3D12/ANGLE) internally; there is no such choice to make from
+	// wasm — DawnRHIWasmProbe's probes never set backendType and worked
+	// correctly against the real GPU via Chrome's own backend selection.
 	AdapterOpts.backendType = WGPUBackendType_Vulkan;
+#endif
 
 	WGPURequestAdapterCallbackInfo AdapterCbInfo = {};
 	AdapterCbInfo.mode = WGPUCallbackMode_AllowSpontaneous;

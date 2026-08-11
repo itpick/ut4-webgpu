@@ -9,7 +9,7 @@
 using System.IO;
 using UnrealBuildTool;
 
-[SupportedPlatformGroups("Linux")]
+[SupportedPlatforms("Linux", "SimplyStream")]
 public class DawnRHI : ModuleRules
 {
 	public DawnRHI(ReadOnlyTargetRules Target) : base(Target)
@@ -26,6 +26,38 @@ public class DawnRHI : ModuleRules
 				"TraceLog",
 			}
 		);
+
+		// DAWNRHI_WASM: our own module-local switch (not a gamble on any
+		// auto-generated PLATFORM_* macro) that DawnRHI's own .cpp/.h files
+		// use to branch between the native dawn::native-backed path (Linux,
+		// static libdawn.a + libtint.a + libSPIRV-Tools.a, proc table
+		// installed via dawnProcSetProcs) and the wasm/emdawnwebgpu-backed
+		// path (SimplyStream target, no dawn::native at all — the browser's
+		// implicit device is reached purely through webgpu.h calls that
+		// resolve to the emscripten port's JS glue).
+		bool bIsWasm = Target.Platform == UnrealTargetPlatform.SimplyStream;
+		PublicDefinitions.Add(bIsWasm ? "DAWNRHI_WASM=1" : "DAWNRHI_WASM=0");
+
+		if (bIsWasm)
+		{
+			// Do NOT add the vendored native Dawn/include path here: it
+			// ships webgpu.h/dawn_proc.h/dawn/native headers for the
+			// *native* Dawn revision this fork vendors, which is not
+			// guaranteed to be struct-layout/enum-identical to whatever
+			// Dawn/Tint revision stock emscripten's emdawnwebgpu port
+			// bundles. Mixing the two would risk a silent ABI mismatch
+			// between our compiled code's idea of webgpu.h and the port's
+			// own JS glue. The port supplies its own compatible webgpu.h
+			// automatically once DawnRHITestTarget adds
+			// `--use-port=emdawnwebgpu` to the compile+link lines (see
+			// DawnRHITest.Target.cs) — nothing to add here for headers.
+			//
+			// No native static libs (libdawn.a/libtint.a/libSPIRV-Tools.a),
+			// no dl/pthread/vulkan system libs either — none of that
+			// applies to a browser-hosted WebGPU device.
+			PrecompileForTargets = PrecompileTargetsType.Any;
+			return;
+		}
 
 		// Vendored Dawn/Tint (open source, Apache-2.0/BSD) — reused in place
 		// from the SimplyStream fork's ThirdParty checkout per project

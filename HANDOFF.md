@@ -1,8 +1,232 @@
-# DawnRHI handoff — 2026-08-10 (update 6: the pivotal join — real cooked UE shader pair renders through emdawnwebgpu IN A REAL BROWSER, offscreen-readback verified, pixel-identical to the native proof)
+# DawnRHI handoff — 2026-08-10 (update 7: the real UE DawnRHI module compiles + links to wasm via UBT and boots into GEngineLoop.PreInit() in a real browser — first hard blocker found is a Core/Launch gap, not an RHI gap)
 
-Read this first, then "Update 5" below it, then "Update 4", "Update 3",
-"Update 2", "Update 1". Branch `dawnrhi-stage1`, pushed to
+Read this first, then "Update 6" below it, then "Update 5", "Update 4",
+"Update 3", "Update 2", "Update 1". Branch `dawnrhi-stage1`, pushed to
 `itpick/ut4-webgpu`. Same clean-path constraints as ever.
+
+## Update 7: real module, real UBT wasm build, real browser boot — blocked at engine PreInit by a Core gap
+
+**Goal**: close the harness-vs-module gap Update 6 explicitly left open —
+get the REAL `DawnRHI` UE module (not `DawnRHIWasmProbe`'s standalone
+harness) through UBT's emscripten/wasm toolchain for
+`UnrealTargetPlatform.SimplyStream`, and see how far it gets toward
+`RHIInit`/device-ready in a real browser.
+
+**Done — real UBT wasm compile+link of the real module, first time
+attempted.** `DawnRHITest` (the same native Stage-1 acceptance program
+from Update 1, native-only until now) now also builds for `SimplyStream`
+via `Engine/Build/BatchFiles/RunUBT.sh DawnRHITest SimplyStream
+Development` — `Result: Succeeded`, real `DawnRHITest.wasm/.js/.html` in
+`Engine/Binaries/SimplyStream/`, `Module.DawnRHI.cpp` and
+`Module.DawnRHITest.cpp` both genuinely compiled+linked by UBT+emcc, not
+hand-rolled. Then ran it in real headless Chrome (same `tools/
+cdp_capture.mjs` CDP driver Update 6 used) and got real console/exception
+evidence of exactly how far execution gets.
+
+### Native → wasm deltas found and fixed (all confirmed via real build/run output, not guessed)
+
+1. **Platform gating.** `DawnRHI.Build.cs` / `DawnRHITest.Target.cs` were
+   `[SupportedPlatformGroups("Linux")]`-only — UBT silently never even
+   constructs the module/target rules for `SimplyStream` (platform group
+   `Mobile`, confirmed via `Config/DataDrivenPlatformInfo.ini`). Fixed by
+   switching to the exact-match `[SupportedPlatforms("Linux",
+   "SimplyStream")]` attribute (string-parsed via `UnrealTargetPlatform.
+   Parse`, no dependency on platform-group membership).
+2. **`-s` link settings on the compile line.** First build attempt put
+   `--use-port=emdawnwebgpu -sASYNCIFY=0 -sEXIT_RUNTIME=0
+   -sALLOW_MEMORY_GROWTH=1` on both `AdditionalCompilerArguments` and
+   `AdditionalLinkerArguments`. Real error: `emcc: error: linker setting
+   ignored during compilation: 'ASYNCIFY' [-Werror]` on every single
+   compile action. Fixed: only `--use-port=emdawnwebgpu` on the compile
+   line (needed for the port's headers); the `-s...` settings moved to
+   the link line only.
+3. **Native-only Dawn headers/calls.** `DawnRHIPrivate.h` unconditionally
+   included `<dawn/dawn_proc.h>` + `<dawn/native/DawnNative.h>`
+   (dawn::native is native-only — emdawnwebgpu has no such library, every
+   webgpu.h call resolves straight to the port's JS glue / the browser's
+   implicit device). `DawnDynamicRHI.cpp::InitDawnDevice()` called
+   `dawnProcSetProcs(&dawn::native::GetProcs())` and set
+   `AdapterOpts.backendType = WGPUBackendType_Vulkan` (native-only — the
+   browser picks its own backend). Both guarded behind a new
+   module-local `DAWNRHI_WASM` compile-time switch (set by
+   `DawnRHI.Build.cs` per-target, not a gamble on an assumed
+   auto-generated platform macro). Also skipped requesting the
+   `WGPUInstanceFeatureName_TimedWaitAny` instance feature for wasm
+   (unverified whether emdawnwebgpu's instance supports it at all;
+   `DawnRHIWasmProbe`'s working probes never request it).
+   `DawnRHI.Build.cs` also no longer adds the *vendored native* Dawn
+   `include/` path for `SimplyStream` at all (mixing it with the
+   port's own bundled webgpu.h risked a silent ABI mismatch between two
+   different Dawn/Tint revisions) — the port supplies its own compatible
+   headers automatically once `--use-port=emdawnwebgpu` is on the
+   compile line, confirmed sufficient (compiled clean with zero of our
+   own `-I` for Dawn headers on this platform).
+4. **Two missing globals SimplyStream's Core platform-extension code
+   expects from precompiled JS-glue objects we deliberately don't link**
+   (`SimplyStreamPlatformMemory.cpp`/`SimplyStreamPlatformProcess.cpp` —
+   ordinary open Core code, not WebGPURHI/WebGPUShaderFormat): `extern
+   uint64 GTotalMemoryAvailable;` and `extern std::string project_name;`.
+   Found as the *only* two undefined symbols at the first real link
+   attempt (`wasm-ld: error: undefined symbol: GTotalMemoryAvailable` x2,
+   `project_name` in the second attempt) — not a guess, direct linker
+   output. Fixed with trivial real definitions in a new
+   `DawnRHITest/Private/DawnRHITestWasmGlobals.cpp` (guarded
+   `#if defined(__EMSCRIPTEN__)`, matching the exact guard
+   `SimplyStreamPlatformMemory.cpp` itself already uses — not a
+   hypothesized `PLATFORM_SIMPLYSTREAM` macro).
+5. **`-Dstrncpy=strncpy2` toolchain-wide rename with no stock-emsdk-compatible
+   definition.** `SimplyStreamToolChain.cs` unconditionally passes
+   `-Dstrncpy=strncpy2` to every compile for this platform (a generic
+   C-runtime rename, nothing WebGPU-specific — presumably paired with a
+   custom-rebuilt libc in SimplyStream's own vendor toolchain artifacts,
+   the "lib-5.0.7-up-mt" third-party lib path h5conf logs, which stock
+   emsdk's unmodified musl sysroot doesn't have). Real, live evidence:
+   first headless-Chrome run aborted during **static-initializer setup**
+   (`__wasm_call_ctors`, before `main()` even runs) with `Aborted(missing
+   function: strncpy2)`. Fixed in the same globals file: `#pragma
+   push_macro("strncpy") / #undef strncpy` to locally suppress the
+   rename, declare+call the *real* libc `strncpy` under its true name,
+   and define `strncpy2()` as a trivial forwarder — naively writing
+   `return strncpy(...)` without the `#undef` would itself get rewritten
+   to `strncpy2(...)` by the same command-line macro, i.e. infinite
+   self-recursion, since `-D` applies to every raw token in every TU
+   including this one.
+
+### Real result after all five fixes: compiles, links, boots in a real browser, reaches `main()` → `GEngineLoop.PreInit()` — then hits a Core gap, not an RHI gap
+
+Ran via the same recipe as Update 6 (`host/serve.py` COOP/COEP server +
+`tools/cdp_capture.mjs` driving real headless Chrome with the
+nix-shell-derived `LD_LIBRARY_PATH` workaround for Playwright's cached
+Chrome binary). Real captured console/exception evidence:
+
+```
+Aborted(missing function: _ZN13IPlatformFile19GetPlatformPhysicalEv)
+  at abort (DawnRHITest.js:2819)
+  at __ZN13IPlatformFile19GetPlatformPhysicalEv (DawnRHITest.js:3533)
+  ... (wasm call stack) ...
+  at $__main_argc_argv (DawnRHITest.wasm)
+  at callMain / run (DawnRHITest.js)
+```
+
+This is progress, not a regression from the strncpy2 fix — the crash site
+moved from *before* `main()` (static ctors) to *inside* `main()`'s own
+body, specifically inside `GEngineLoop.PreInit()` (the very first call in
+`INT32_MAIN_INT32_ARGC_TCHAR_ARGV()`, before `RunDawnRHITest()`/
+`RunDawnRHIRealShaderTest()` — i.e. before `DawnRHI` is ever touched).
+`IPlatformFile::GetPlatformPhysical()` is Core's per-platform
+file-abstraction accessor (every platform implements it —
+`MacPlatformFile.cpp`, `LinuxPlatformFile.cpp`, `IOSPlatformFile.cpp`,
+`WindowsPlatformFile.cpp`, `AndroidPlatformFile.cpp` all exist under
+`Engine/Source/Runtime/Core/Private/<Platform>/`). SimplyStream's
+equivalent, `Engine/Platforms/SimplyStream/Source/Runtime/Core/Public/
+SimplyStreamPlatformFile.h`, is a **3-line empty stub** — copyright +
+`#pragma once`, no class declaration at all. `IPlatformFile` itself
+(`GenericPlatformFile.h`) has 42 pure-virtual methods (OpenRead/
+OpenWrite/FileExists/FileSize/DeleteFile/CopyFile/CreateDirectory/
+IterateDirectory/GetStatData/... — a full filesystem abstraction). This
+confirms the real implementation is entirely absent from the open/
+available source tree for this platform — structurally the same class of
+gap as WebGPURHI/WebGPUShaderFormat (a required native platform
+subsystem that exists only in SimplyStream's closed/precompiled
+artifacts), just a different subsystem (Core/Launch bootstrap, not
+rendering) and not one of the two directories the project's clean-path
+rule explicitly names.
+
+### Root cause, with evidence — not guessed
+
+`GEngineLoop.PreInit()` unconditionally bootstraps a working
+`IPlatformFile` (for `FPaths`/`FConfigCacheIni`/engine-version/plugin
+discovery, etc.) before any game code runs. On this platform that means
+constructing whatever singleton `IPlatformFile::GetPlatformPhysical()`
+is supposed to return — a type that, per the header, doesn't exist in
+the open source tree at all. This is *not* an RHI problem: it happens
+entirely before `FModuleManager::LoadModuleChecked<IDynamicRHIModule>
+(TEXT("DawnRHI"))` is ever reached, i.e. before any DawnRHI code runs.
+It's also why `DawnRHIWasmProbe`'s standalone harnesses (Update 5/6)
+never hit this at all — they use a bare `main()`/raw webgpu.h calls with
+zero UE module-system or `GEngineLoop` engagement, so they never needed
+a working `IPlatformFile`.
+
+### What this proves / doesn't prove (be precise about scope)
+
+**Proves** (mission priority 1, materially achieved): the real `DawnRHI`
+UE module — real UBT module boundaries, real `Module.DawnRHI.cpp` unity
+build, real `ModuleRules`/`TargetRules` platform wiring, not a hand-rolled
+harness — compiles and links cleanly to wasm via UBT + stock emscripten
+for `UnrealTargetPlatform.SimplyStream`, with only the five deltas above
+needed (all resolved, all evidenced by real compiler/linker/runtime
+output). The resulting `.wasm` loads and executes for real in a real
+browser (headless Chrome via CDP, same verification method as Update
+5/6) — reaching all the way to `main()` → `GEngineLoop.PreInit()` before
+stopping.
+
+**Does NOT yet prove** (honest scope, matching this session's actual
+result): `RHIInit`/device-ready from the real module in wasm (mission
+priority 2) — never reached, because engine bootstrap stops first on an
+unrelated Core gap. Whether `FDawnDynamicRHI::InitDawnDevice()`'s
+blocking-style `wgpuInstanceWaitAny(..., UINT64_MAX)` calls (used for
+adapter/device acquisition) even work under emdawnwebgpu without
+`ASYNCIFY` is *still* unverified either way — `DawnRHIWasmProbe`'s
+working probes are purely callback/event-loop-driven and never call
+`wgpuInstanceWaitAny` at all, which is a real, separate, still-open
+question for whenever engine bootstrap is unblocked and DawnRHI code
+actually starts executing.
+
+### The hard blocker (evidence-based, not a guess) and precise next step
+
+**Blocker**: `GEngineLoop.PreInit()` requires a working `IPlatformFile`
+for `UnrealTargetPlatform.SimplyStream`; no implementation exists in the
+open/available source tree (`SimplyStreamPlatformFile.h` is an empty
+stub; `IPlatformFile` has 42 pure virtuals to implement). This is a
+Core/Launch-level platform-support gap, not an RHI gap, and implementing
+a from-scratch `FSimplyStreamPlatformFile` (mapping to emscripten's
+MEMFS/IDBFS/NODEFS as appropriate) is a substantial subsystem in its own
+right — out of scope to safely hand-roll within this session per the
+project's stop-and-report rule for genuine walls.
+
+**Next step, in priority order for whoever picks this up:**
+1. Implement a minimal `FSimplyStreamPlatformFile : public
+   IPhysicalPlatformFile` backed by emscripten's synchronous MEMFS calls
+   (plain POSIX `open`/`read`/`write`/`stat`/`opendir` all work
+   synchronously against MEMFS without `ASYNCIFY`) — model on
+   `IOSPlatformFile.cpp` or `LinuxPlatformFile.cpp`'s structure, which
+   are the smallest of the existing per-platform implementations. Only
+   needs to be "good enough" to get `GEngineLoop.PreInit()` past
+   filesystem bootstrap for a Program target with
+   `bCompileAgainstEngine=false` — not a full-featured file system.
+2. Once `PreInit()` completes, re-run this exact same headless-Chrome
+   recipe (`host/serve.py` + `tools/cdp_capture.mjs`) and read the next
+   real console/exception evidence — expect either a clean `DawnRHI
+   initialised: <name>` log (this session's actual mission-priority-2
+   target) or a new, different blocker inside `InitDawnDevice()` itself
+   (most likely candidate: the blocking `wgpuInstanceWaitAny` calls
+   flagged above never being able to observe their own callback fire
+   without `ASYNCIFY`/a real event-loop yield — would show up as a hang,
+   not a crash, so give it a real wall-clock timeout when testing rather
+   than assuming success from "it didn't error").
+3. If `FSimplyStreamPlatformFile` proves too large a detour, an
+   alternative worth trying first (smaller): write a custom entry point
+   for a *new*, `DawnRHI`-only Program target that skips
+   `GEngineLoop.PreInit()` entirely and does only the minimal Core setup
+   `FModuleManager::LoadModuleChecked` + `DawnRHI` actually need
+   (memory allocators, `FCommandLine::Set`, logging) — unverified
+   whether that minimal subset is smaller or larger than just
+   implementing `IPlatformFile`; not attempted this session.
+
+### Files touched this session
+
+`DawnRHI/DawnRHI.Build.cs`, `DawnRHI/Public/DawnRHIPrivate.h`,
+`DawnRHI/Private/DawnDynamicRHI.cpp`, `DawnRHITest/DawnRHITest.Target.cs`,
+`DawnRHITest/Private/DawnRHITestWasmGlobals.cpp` (new) — all pushed. Local
+engine-tree copies at `/mnt/models/ss-build/UnrealEngine/Engine/Source/
+Runtime/DawnRHI/` and `.../Source/Programs/DawnRHITest/` kept in sync by
+hand (same split-layout note as every previous update). Built artifacts
+(`Engine/Binaries/SimplyStream/DawnRHITest.{wasm,js,html}`) are NOT
+committed (regenerable via `Engine/Build/BatchFiles/RunUBT.sh DawnRHITest
+SimplyStream Development` from `/mnt/models/ss-build/UnrealEngine`, same
+"don't commit generated build output" policy as everywhere else in this
+branch).
+
 
 ## Update 6: real cooked shader, real browser, real pixels
 
