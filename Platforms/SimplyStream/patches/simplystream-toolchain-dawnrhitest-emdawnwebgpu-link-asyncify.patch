@@ -1,0 +1,18 @@
+--- a/Engine/Platforms/SimplyStream/Source/Programs/UnrealBuildTool/SimplyStreamToolChain.cs	2026-08-10 23:56:15.242260576 -0500
++++ b/Engine/Platforms/SimplyStream/Source/Programs/UnrealBuildTool/SimplyStreamToolChain.cs	2026-08-10 23:56:15.243441309 -0500
+@@ -821,6 +821,15 @@
+ 			if (LinkEnvironment.OutputFilePath.GetFileName().Contains("DawnRHITest"))
+ 			{
+ 				Result += " -sPROXY_TO_PTHREAD"; // DawnRHITest offscreen boot: engine loop off the browser main thread
++				// emdawnwebgpu JS library: the webgpu.h C entry points compile against the
++				// --use-port=emdawnwebgpu headers (on every compile rsp) but the port must ALSO be on the
++				// LINK line or emscripten emits runtime abort() stubs for them. Target.cs link args are
++				// dropped by this toolchain, so inject here -- same flag DawnRHIWasmProbe used at link.
++				Result += " --use-port=emdawnwebgpu";
++				// emdawnwebgpu TimedWaitAny (needed so wgpuInstanceWaitAny works -- UINT64_MAX is a finite
++				// timed wait under emdawnwebgpu) requires stack-yielding to bridge the browser-async device
++				// request into UE's synchronous RHIInit. Asyncify provides that. Scoped to this test program.
++				Result += " -sASYNCIFY -sASYNCIFY_STACK_SIZE=131072";
+ 
+ 				// ICU internationalization data: FICUInternationalization::Initialize() (Engine/Source/Runtime/Core/Private/
+ 				// Internationalization/ICUInternationalization.cpp) probes <ContentDir>/Internationalization/icudt64l/ via

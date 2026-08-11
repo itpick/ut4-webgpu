@@ -81,14 +81,15 @@ void FDawnDynamicRHI::InitDawnDevice()
 	// calls yielding control back to the browser event loop, so a spin-wait
 	// inside wasm code would block that very event loop and deadlock
 	// instead of ever seeing the callback fire). Left unrequested here.
-#if DAWNRHI_WASM
-	WGPUInstanceDescriptor InstanceDesc = {};
-#else
+	// TimedWaitAny is required for BOTH native (finite polling waits) AND wasm/emdawnwebgpu:
+	// emdawnwebgpu treats even UINT64_MAX as a finite timed wait (not the infinite sentinel), so
+	// wgpuInstanceWaitAny fails 'TimedWaitAny not enabled' without it. On wasm this is only
+	// serviceable because main() runs on a worker (PROXY_TO_PTHREAD): the worker blocks on the
+	// future's futex while the browser main thread services the WebGPU promise and signals it.
 	WGPUInstanceFeatureName RequiredFeatures[] = { WGPUInstanceFeatureName_TimedWaitAny };
 	WGPUInstanceDescriptor InstanceDesc = {};
 	InstanceDesc.requiredFeatureCount = 1;
 	InstanceDesc.requiredFeatures = RequiredFeatures;
-#endif
 	Instance = wgpuCreateInstance(&InstanceDesc);
 	checkf(Instance, TEXT("DawnRHI: wgpuCreateInstance failed"));
 

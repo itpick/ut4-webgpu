@@ -2121,3 +2121,33 @@ This is a deliberate placeholder from an earlier development stage that only all
 **Security note:** this session's `framepick` SSH access went through this box's standing login banner (a standard authorized-use notice), consistent with the account this project has used throughout — nothing unusual encountered, no need to paste the banner text here.
 
 **Files:** `Platforms/SimplyStream/patches/simplystream-toolchain-dawnrhitest-icu-preload.patch` (new), `Platforms/SimplyStream/patches/core-icuinternationalization-simplystream-abspath.patch` (new), `docs/simplystream-wasm-boot-update10.log` (new). Engine-tree edits live at `Engine/Platforms/SimplyStream/Source/Programs/UnrealBuildTool/SimplyStreamToolChain.cs` and `Engine/Source/Runtime/Core/Private/Internationalization/ICUInternationalization.cpp` (apply both patches there).
+
+---
+
+## Update 11 — MILESTONE: FDawnDynamicRHI creates a WebGPU device AND renders inside the real UE engine, in a real browser
+
+The real `DawnRHITest` UE program (real UBT wasm build, PROXY_TO_PTHREAD worker-hosted) now boots through PreInit, loads the real `DawnRHI` module, brings up `FDawnDynamicRHI`, **creates a real WebGPU device via the browser's WebGPU, renders the checkerboard through the real RHI command path, and reads it back — logging SUCCESS.** Captured console (`docs/simplystream-wasm-boot-update11.log`):
+
+```
+LogDawnRHI: DawnRHI adapter: google /
+LogDawnRHITest: DawnRHI initialised: Dawn
+LogDawnRHITest: Center pixel = (30,60,200,255)
+LogDawnRHITest: SUCCESS
+```
+
+Zero WebGPU (uncaptured) validation errors. This is the in-engine analog of the Update 6 standalone-harness render — same RHI code, now the actual UE module in the actual engine boot.
+
+Four code/link walls cleared this session (each revealed the next):
+1. **IsSupported gate** — `DawnRHIModule::IsSupported()` was hardcoded `return PLATFORM_LINUX` (Stage-1 placeholder) → widened to `PLATFORM_LINUX || PLATFORM_WASM`.
+2. **emdawnwebgpu JS library not linked** — `--use-port=emdawnwebgpu` was on every compile rsp but NOT the link rsp, so every `wgpu*` C entry point was an emscripten abort stub (`missing function: wgpuCreateInstance`). Added `--use-port=emdawnwebgpu` to the DawnRHITest link in the toolchain (Target.cs link args are dropped by this toolchain).
+3. **TimedWaitAny** — emdawnwebgpu treats even `UINT64_MAX` as a finite timed wait, so `wgpuInstanceWaitAny` failed "TimedWaitAny not enabled". The WASM instance path skipped requesting it; now requests `WGPUInstanceFeatureName_TimedWaitAny` in both native and wasm.
+4. **Asyncify** — emdawnwebgpu's TimedWaitAny "requires Asyncify or JSPI". Added `-sASYNCIFY -sASYNCIFY_STACK_SIZE=131072` to the DawnRHITest link so the browser-async adapter/device request can bridge into UE's synchronous RHIInit `wgpuInstanceWaitAny`. (wasm grew 10.9MB → 35.9MB from instrumentation — acceptable for this test program; JSPI would be lighter but needs newer-Chrome/flags. Reconsider for the full engine target.)
+
+Environmental (test harness, not engine): headless Chrome returned a null adapter until `--use-angle=vulkan`/`--use-gl=angle` were dropped (run with `NO_ANGLE_VULKAN=1`); `--ignore-gpu-blocklist` added to `tools/cdp_capture.mjs`. Working flags: `--headless=new --enable-unsafe-webgpu --enable-features=Vulkan --ignore-gpu-blocklist --no-sandbox --disable-gpu-sandbox` (NO angle flags).
+
+Files: `DawnRHI/Private/DawnRHIModule.cpp` (gate), `DawnRHI/Private/DawnDynamicRHI.cpp` (TimedWaitAny both paths), `Platforms/SimplyStream/patches/simplystream-toolchain-dawnrhitest-emdawnwebgpu-link-asyncify.patch` (vendor toolchain: use-port + Asyncify on DawnRHITest link), `tools/cdp_capture.mjs` (ignore-gpu-blocklist), `docs/simplystream-wasm-boot-update11.log`.
+
+**Next walls (precise):**
+- **Post-SUCCESS teardown assert** `!HasCommands() || IsExecuting()` [RHICommandList.cpp:169] — fires AFTER the SUCCESS/readback (render is complete); a teardown-ordering artifact in the test's command-list shutdown, same benign class as the native "Wall D". Clean up shutdown ordering.
+- **Real FMaterial shaders + multi-@group** (still the open breadth item from Update 5, no wasm-specific blocker) and **cooking real UT4 content** through DawnShaderFormat → render a real map.
+- **Asyncify cost** for the full engine target: revisit JSPI, or the emscripten preinitialized-device pattern (`emscripten_webgpu_get_device`), to avoid instrumenting the whole engine.

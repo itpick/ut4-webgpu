@@ -7,8 +7,8 @@ class FDawnRHIModule final : public IDynamicRHIModule
 public:
 	virtual bool IsSupported() override
 	{
-		// Stage 1: Linux/Vulkan-backed Dawn only.
-		return PLATFORM_LINUX;
+		// Linux/Vulkan-backed Dawn (native) + SimplyStream/wasm (emdawnwebgpu, browser WebGPU).
+		return PLATFORM_LINUX || PLATFORM_WASM;
 	}
 
 	virtual FDynamicRHI* CreateRHI(ERHIFeatureLevel::Type RequestedFeatureLevel = ERHIFeatureLevel::Num) override
