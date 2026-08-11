@@ -1,0 +1,55 @@
+===== CAPTURED CONSOLE OUTPUT =====
+[log.error] Failed to load resource: the server responded with a status of 404 (File not found)
+[console.error] Used memory before allocating anything was 4.90MB
+[console.log] *** onRuntimeInitialized — wasm instantiated ***
+[console.error] Ensure condition failed: oldValue == newValue [File:./Runtime/Core/Private/HAL/ThreadingBase.cpp] [Line: 201] 
+[console.error] oldValue(1) newValue(0) If this check fails make sure that there is a FTaskTagScope(ETaskTag::EGameThread) as deep as possible on the current callstack, you can see the current value in ActiveNamedThreads(1)
+[console.error] LogOutputDevice: Error: === Handled ensure: ===
+[console.error] LogOutputDevice: Error: 
+[console.error] LogOutputDevice: Error: Ensure condition failed: oldValue == newValue  [File:./Runtime/Core/Private/HAL/ThreadingBase.cpp] [Line: 201] 
+[console.error] LogOutputDevice: Error: oldValue(1) newValue(0) If this check fails make sure that there is a FTaskTagScope(ETaskTag::EGameThread) as deep as possible on the current callstack, you can see the current value in ActiveNamedThreads(1)
+[console.error] LogOutputDevice: Error: Stack: 
+[console.error] LogOutputDevice: Error: 
+[console.error] Fatal error: [File:./Runtime/Core/Private/Internationalization/ICUInternationalization.cpp] [Line: 161] 
+[console.error] ICU data directory was not discovered:
+[console.error] ../../../Engine/Programs/DawnRHITest/Content/Internationalization
+[console.error] ../../../Engine/Content/Internationalization
+[console.error] 
+[console.error] appError called: 
+[console.error] Fatal error: [File:./Runtime/Core/Private/Internationalization/ICUInternationalization.cpp] [Line: 161] 
+[console.error] ICU data directory was not discovered:
+[console.error] ../../../Engine/Programs/DawnRHITest/Content/Internationalization
+[console.error] ../../../Engine/Content/Internationalization
+[console.error] 
+[console.error] 
+[console.error] 
+[console.error] LogHAL: Error: appError called: Fatal error: [File:./Runtime/Core/Private/Internationalization/ICUInternationalization.cpp] [Line: 161] 
+[console.error] ICU data directory was not discovered:
+[console.error] ../../../Engine/Programs/DawnRHITest/Content/Internationalization
+[console.error] ../../../Engine/Content/Internationalization
+[console.error] 
+[console.error] 
+[console.error] 
+[console.error] 
+[console.error] 
+[console.error] Exiting due to error
+[console.error] ABORT: native code called abort()
+[console.error] Aborted(native code called abort())
+[console.error] worker: onmessage() captured an uncaught exception: RuntimeError: Aborted(native code called abort())
+[console.error] RuntimeError: Aborted(native code called abort())
+    at abort (http://127.0.0.1:8804/DawnRHITest.js:2819:11)
+    at __abort_js (http://127.0.0.1:8804/DawnRHITest.js:7045:7)
+    at http://127.0.0.1:8804/DawnRHITest.wasm:wasm-function[31431]:0x874bf7
+    at http://127.0.0.1:8804/DawnRHITest.wasm:wasm-function[1516]:0x73e3b
+    at http://127.0.0.1:8804/DawnRHITest.wasm:wasm-function[4760]:0x14c2fb
+    at http://127.0.0.1:8804/DawnRHITest.wasm:wasm-function[951]:0x4f230
+    at http://127.0.0.1:8804/DawnRHITest.wasm:wasm-function[893]:0x4ab73
+    at http://127.0.0.1:8804/DawnRHITest.wasm:wasm-function[800]:0x44d1f
+    at http://127.0.0.1:8804/DawnRHITest.wasm:wasm-function[2554]:0xb213c
+    at http://127.0.0.1:8804/DawnRHITest.wasm:wasm-function[2639]:0xb8c9c
+[console.error] Pthread 0x0000000020d20eb8 sent an error! http://127.0.0.1:8804/DawnRHITest.js:2679: Uncaught RuntimeError: Aborted(native code called abort())
+[console.error] window.onerror: Uncaught [object ErrorEvent]
+[exception] {"exceptionId":1,"text":"Uncaught","lineNumber":3337,"columnNumber":10,"scriptId":"6","url":"http://127.0.0.1:8804/DawnRHITest.js","stackTrace":{"callFrames":[{"functionName":"worker.onerror","scriptId":"6","url":"http://127.0.0.1:8804/DawnRHITest.js","lineNumber":3337,"columnNumber":10}]},"exception":{"type":"object","className":"ErrorEvent","description":"ErrorEvent","objectId":"1337288187183424811.1.1","preview":{"type":"object","description":"ErrorEvent","overflow":true,"properties":[{"name":"isTrusted","type":"boolean","value":"true"},{"name":"message","type":"string","value":"Uncaught RuntimeError: Aborted(native code called abort())"},{"name":"filename","type":"string","value":"http://127.0.0.1:8804/DawnRHITest.js"},{"name":"lineno","type":"number","value":"2679"},{"name":"colno","type":"number","value":"7"}]}},"executionContextId":1}
+[console.error] window.onerror: Uncaught RuntimeError: Aborted(native code called abort())
+[log.error] Uncaught RuntimeError: Aborted(native code called abort())
+===== END (43 messages) =====

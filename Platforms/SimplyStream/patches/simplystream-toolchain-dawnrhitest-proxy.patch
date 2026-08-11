@@ -1,0 +1,10 @@
+--- /mnt/models/ss-build/UnrealEngine/Engine/Platforms/SimplyStream/Source/Programs/UnrealBuildTool/SimplyStreamToolChain.cs.bak	2026-08-10 22:38:15.475621686 -0500
++++ /mnt/models/ss-build/UnrealEngine/Engine/Platforms/SimplyStream/Source/Programs/UnrealBuildTool/SimplyStreamToolChain.cs	2026-08-10 22:38:15.477674186 -0500
+@@ -818,6 +818,7 @@
+ 				// behaviour on 5.x is what the =0 path used to ask for.
+ 			}
+ 
++			if (LinkEnvironment.OutputFilePath.GetFileName().Contains("DawnRHITest")) { Result += " -sPROXY_TO_PTHREAD"; } // DawnRHITest offscreen boot: engine loop off the browser main thread
+ 			return Result;
+ 		}
+ 

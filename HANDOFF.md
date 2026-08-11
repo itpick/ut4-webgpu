@@ -2052,3 +2052,25 @@ how far PreInit gets toward `RHIInit` / `FDynamicRHI` creation from our
 `DawnRHI` module. Also seen as benign link-time `undefined symbol`
 warnings (assert/break-only paths): `html5_break_msg`, `LogPlatformBreak`,
 `checkNoEntry_internal` — provide open stubs if an assert path is ever hit.
+
+## Update 9: threading-model wall cleared — real DawnRHI wasm boots deep into PreInit (past thread/task-graph bringup, now into Internationalization)
+
+**Goal (from Update 8 next wall):** get the real DawnRHI wasm build past the "Blocking on the main thread is very dangerous" wall so PreInit continues toward RHIInit / our DawnRHI device creation.
+
+**Root cause of the threading wall + fix:** SimplyStream runs the game thread on an external worker (`IS_RUNNING_GAMETHREAD_ON_EXTERNAL_THREAD=1`), but `DawnRHITest` ran `main()`/PreInit on the browser main thread, which cannot block. The canonical fix is `-sPROXY_TO_PTHREAD` (main runs on a worker; browser main thread stays free). Non-obvious blocker: setting it via `DawnRHITest.Target.cs` `AdditionalLinkerArguments` had NO effect — `SimplyStreamToolChain.GetLinkArguments()` builds the emcc link line from its own hardcoded list and never appends `LinkEnvironment.AdditionalArguments`, so all target link args are silently dropped (webgpu still linked only because `--use-port=emdawnwebgpu` is ALSO on the compile line). Verified by: the flag never appeared in `DawnRHITest.html.rsp`, and the generated JS used `callMain` with zero `_emscripten_proxy_main`. Fix: inject `-sPROXY_TO_PTHREAD` directly in `SimplyStreamToolChain.GetLinkArguments()`, gated to `OutputFilePath.Contains("DawnRHITest")` so SimplyStream's own game path (which deliberately keeps it commented, using set_main_loop + external game thread) is untouched. Recorded as `Platforms/SimplyStream/patches/simplystream-toolchain-dawnrhitest-proxy.patch` (vendor file — patch, not committed source). After rebuild the JS gained `_emscripten_proxy_main` x4 and the main-thread-block message disappeared.
+
+**Second wall (canvas transfer) + fix:** with PROXY_TO_PTHREAD plus the toolchain's `-sOFFSCREENCANVAS_SUPPORT=1`, the first `pthread_create` tries to transfer canvas `#canvas` to the worker and failed (`could not find canvas with ID #canvas`). Root cause: the stock UBT-generated `DawnRHITest.html` throws a `TypeError` reading `window.parent.state.project_id` (it expects SimplyStream's platform iframe) BEFORE it wires `Module.canvas`. Fix: a standalone shim `host/dawnrhitest-shim.html` that stubs the platform-loader state, provides a `canvas id=canvas`, wires `Module.canvas` + print/printErr to console, and loads `DawnRHITest.js`. Boot then jumped from 6 to 55 console lines.
+
+**Furthest boot point (real captured headless-Chrome console, `docs/simplystream-wasm-boot-update9.log`):** boots on a worker thread all the way past thread/task-graph bringup into engine Internationalization init, where it hits a NEW fatal:
+
+```
+Fatal error: ICUInternationalization.cpp Line 161: ICU data directory was not discovered:
+  ../../../Engine/Programs/DawnRHITest/Content/Internationalization
+  ../../../Engine/Content/Internationalization
+```
+
+(Also a non-fatal "Handled ensure" `oldValue==newValue` about `FTaskTagScope(ETaskTag::EGameThread)` — expected now that the game thread runs on a worker.)
+
+**Next wall (ICU data — a content/filesystem step, NOT a closed subsystem):** the SimplyStream platform links `libicu64b.a` (bCompileICU=false on the target does not stop the platform linking it), and ICU init needs its `icudt*.dat` data, which is not present in the wasm MEMFS. Next step: either preload `Engine/Content/Internationalization/` into the wasm FS (`--preload-file` / packaged .data), or provide a minimal ICU data set / a no-i18n path. Then re-check how far PreInit gets toward `FModuleManager::LoadModule("DawnRHI")` / `RHIInit` / `FDawnDynamicRHI` device creation.
+
+**Files:** `Platforms/SimplyStream/patches/simplystream-toolchain-dawnrhitest-proxy.patch` (new), `host/dawnrhitest-shim.html` (new), `docs/simplystream-wasm-boot-update9.log` (new). `DawnRHITest.Target.cs` reverted (its AdditionalLinkerArguments are dropped by the toolchain — dead). Engine-tree toolchain edit lives at `Engine/Platforms/SimplyStream/Source/Programs/UnrealBuildTool/SimplyStreamToolChain.cs` (apply the patch there).
