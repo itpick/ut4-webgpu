@@ -2269,3 +2269,75 @@ The SimplyStream platform hard-loads a module **named** `WebGPUShaderFormat` (`E
 
 Cook command that reaches the wall:
 `UnrealTournament/Binaries/Linux/UnrealTournamentEditor-Cmd UnrealTournament/UnrealTournament.uproject -run=Cook -TargetPlatform=SimplyStream -Map=/Engine/Maps/Entry -unversioned -NoShaderDDC` under the nix cook-shell (build with `MSBUILDDISABLENODEREUSE=1` and `-NoUBA` to dodge the local UBA-executor SIGSEGV).
+
+---
+
+## Update 15 — FIRST HONEST SURVIVAL NUMBERS: full UT cooks drive every real global + FMaterial shader through the open WebGPU format; iterated fixes take global failures ES31 357->27 / SM5 2,457->1,381 and material maps from ~100% failing to a few percent
+
+Goal (from Update 14): real survival numbers for our open format (`WebGPUShaderFormat` housing `CompileDawnShader`: HLSL -> ShaderConductor/DXC -> SPIRV-Tools legalize -> Tint -> WGSL) on a REAL `UnrealTournamentEditor-Cmd -run=Cook -TargetPlatform=SimplyStream` cook. **Achieved — four full measurement cooks (cook20 baseline; cook21/22/23 iterations), every number below read from the actual cook logs on framepick (`/mnt/models/ss-build/cook20-baseline-snapshot.log`, `cook21.log`, `cook22.log`, `cook23.log`). No fabrication.**
+
+### Ground-truth corrections to Update 14's leads
+- The prior "cook got past GPULightmass; new wall = No available video device" note was wrong on both counts: the video-device line is SDL failing to open a window to SHOW an error dialog. The real crash was GPULightmass's static initializers firing `checkVerify(!AreShaderTypesInitialized())` (Shader.cpp:315) because `UnrealTournamentEditor.Build.cs` links GPULightmass on Linux as an ELF NEEDED dep of the editor .so (the plugin is Win64-allowlisted, so it can't load early at PostConfigInit; the ELF dep loads it at Default phase = too late). Renaming the .so (found as `.so.disabled` — the dirty gate) just changed the crash to "The game module 'UnrealTournamentEditor' could not be loaded"; `-DisablePlugins=GPULightmass` does nothing against an ELF dep (verified live, backtraced).
+- Nothing had ever compiled through the format in a real cook before this session: with fresh format-version GUIDs, every real preprocess died at Platform.ush's `#error FEATURE_LEVEL has not been defined` — the earlier "1 error only" run was cache noise.
+
+### THE COOK COMMAND (reproducible)
+```
+UnrealTournament/Binaries/Linux/UnrealTournamentEditor-Cmd \
+  /mnt/models/ss-build/UnrealEngine/UnrealTournament/UnrealTournament.uproject \
+  -run=Cook -TargetPlatform=SimplyStream -Map=/Engine/Maps/Entry \
+  -unversioned -NoShaderDDC -unattended \
+  -dpcvars=r.AreShaderErrorsFatal=0 -AllowPartialShaderMaps
+```
+under the nix cook-shell (`/mnt/models/ss-build/ue-cook-shell.nix`). `ShaderCompileWorker` must exist (`RunUBT.sh ShaderCompileWorker Linux Development -NoUBA`) — it didn't, and its absence fails the cook with "Couldn't launch ShaderCompileWorker".
+
+### Walls cleared to get a full cook through (in the order they were hit, each verified live)
+1. **GPULightmass ELF-dep cook-killer** — linkage is now an explicit opt-in: set `UT_GPU_BAKE=1` in the env when running UBT on the bake host; default = not linked = cooks work. `UTGPUBakeCommandlet.cpp` gates on the new `UT_WITH_GPULIGHTMASS` define (was platform-#if). Patch: `engine-patches/uteditor-gpulightmass-optin.patch`. The renamed `.so.disabled` was restored — no dirty gates.
+2. **`FEATURE_LEVEL has not been defined` on every preprocess** — shader formats are responsible for injecting a `*_PROFILE` define (Vulkan does it in SpirvShaderCompiler::ModifyCompilerInput). Our `WebGPUShaderFormatModule` now overrides `ModifyShaderCompilerInput`: `SM5_PROFILE`/`ES3_1_PROFILE` by format, `COMPILER_HLSLCC` + `COMPILER_WEBGPU`, `OVERRIDE_PLATFORMCOMMON_USH` (pulls our PlatformCommon.ush prelude as the per-compiler common header), and `StartupModule` registers the `/Platform/Dawn` shader-dir mapping to `Engine/Platforms/SimplyStream/Shaders` (nothing registers such mappings automatically; `ReplaceVirtualFilePathForShaderPlatform` requires the exact `/Platform/<IncludeDir>` key). Hard-learned: `COMPILER_HLSL=1` is WRONG — it makes Common.ush include `/Engine/Public/Platform/D3D/D3DCommon.ush`, which `FShaderHashCache` assert-rejects for our format (cook11).
+3. **tint internal compiler errors abort the whole cook** — tint ICEs print a banner then `debugger::Break()` + `__builtin_trap()`; in-process that killed cook13. The bridge (`tools/dawn_tint_bridge.cpp`) now has a signal **crash guard**: thread-local sigsetjmp + chained handlers for SIGILL/**SIGTRAP**/SIGABRT/SIGSEGV/SIGBUS/SIGFPE converting compiler crashes into per-shader failures (non-guarded threads re-raise into the engine's own crash handling). SIGTRAP matters: `debugger::Break()` raises it BEFORE the SIGILL trap, and un-guarded it killed whole ShaderCompileWorker batches, which surfaced as error-textless "Internal Error!" jobs.
+4. **Global-shader errors are fatal by design** — `-dpcvars=r.AreShaderErrorsFatal=0` (existing engine cvar) demotes to Error, and the new `-AllowPartialShaderMaps` switch (patch `engine-patches/rendercore-allow-partial-shadermaps.patch`, `FShaderMapContent::Validate`) logs-and-continues on missing shader resources instead of `checkf`. Measurement-only — such cooked maps are NOT shippable; default behavior unchanged.
+5. **`Failure to bind non-optional shader parameter ClipRef` (per-shader Fatal on SUCCESSFULLY compiled shaders)** — the audit-predicted reflection wall. DXC puts HLSL file-scope globals (UE's legacy `FShaderParameter` loose params) in the `$Globals` cbuffer; UE requires member-level `LooseData` parameter-map entries. The bridge now reflects `$Globals` members (OpMemberName + OpMemberDecorate Offset), with sizes from REAL SPIR-V types — next-offset deltas include padding and UE fatals when reported size > C++ member size (verified live: `FTmvMediaShaderColorParameters::EOTF`, "12 bytes, smaller than EOTF's 4 bytes").
+6. **`Failure to bind ... ClearResource` (UAVs invisible to reflection)** — classification now covers storage buffers RO (`NonWritable` -> SRV) / RW (-> UAV) and storage images (`OpTypeImage Sampled=2` -> UAV), not just UB/texture/sampler.
+7. **`Failure to bind ... LumenCardOutputs` (declared-but-unused non-optional params)** — our reflection deliberately ran post-legalization (only USED bindings). UE's `Bind()` fatals on missing non-optional params even when the permutation doesn't use them. The bridge now reflects DECLARED resources off the pre-legalization module and marks eliminated ones `bDeclaredOnly` (new ABI field) — parameter map complete, runtime bind-group construction must skip `bDeclaredOnly` entries (they don't exist in the WGSL).
+8. **Compute was rejected sight-unseen** ("shader frequency 5 not yet supported" — the single largest baseline failure source). Now compiled for real via `ShaderConductor::ShaderStage::ComputeShader`; real limitations surface per shader. Geometry stays rejected (WGSL has no GS — permanent).
+
+### THE NUMBERS (headline)
+
+| metric | cook20 baseline | after fixes (cook21, confirmed cook23) |
+|---|---|---|
+| SP_WEBGPU_ES31 global shaders FAILED | 357 | **27** (-92%) |
+| SP_WEBGPU_SM5 global shaders FAILED | 2,457 | **1,381** (-44%) |
+| material shader maps FAILED @ ~2,400/8,158 pkgs | 584 SM5 + 658 ES31 (≈ every map on both platforms) | **28 SM5 + 66 ES31**, and sampled failures are material-translator/content errors (`MakeMaterialAttributes` node errors), not compile-chain |
+
+Baseline dominant causes (bucketed from cook20's log): texel buffers — HLSL `Buffer<T>`/`RWBuffer<T>` -> SPIR-V Dim=Buffer -> tint reader ICE "Unsupported texture dimension: 5" (~5,100 banners; every SM5 manual-vertex-fetch material VS, every ES31 GPUScene access, most CS); read-write storage textures rejected as a WGSL language feature (~750); non-finite float constants (`TINT_ASSERT(std::isfinite)`, 642); switch fallthrough in tint's SPIR-V reader (774); `template` keyword = CFLAG_HLSL2021 shaders forced to -HV 2018 (~60); `EarlyFragmentTests` unsupported in WGSL (178); wave/subgroup ops; 16-bit types (TSR).
+
+Fixes that produced the improvement (all committed to `dawnrhi-stage1`):
+- **Texel-buffer -> structured-buffer preprocessor remap** (`Buffer`->`StructuredBuffer`, `RWBuffer`->`RWStructuredBuffer` defines in ModifyShaderCompilerInput — the approach PlatformCommon.ush already documented as "RWBuffer ... set in C++"). Killed the dim-5 class outright (5,123 banners -> 0); materials went from ~all-failing to ~all-passing.
+- **`tint::wgsl::AllowedFeatures::Everything()`** on the SPIR-V reader + WGSL writer + `allow_non_uniform_derivatives=true` (killed the `readonly_and_readwrite_storage_textures` class).
+- **SPIR-V word-level legalization** in the bridge: non-finite float32 constants (±Inf -> ±FLT_MAX, NaN -> 0; WGSL has no inf/nan literals) and stripping `OpExecutionMode EarlyFragmentTests` (early-Z hint only).
+- **Per-shader `-HV 2021`** when the engine sets `CFLAG_HLSL2021` (template-based shaders: LaneVectorization/Nanite/TSR/VSM), keeping `-HV 2018` for everything else (2021 restricts vector `&&`/`||` — see Update 4 note).
+
+Negative result (cook22, reverted): `-fvk-force-storage-image-format` is REJECTED by this vendored ShaderConductor/DXC ("Unknown argument") and poisoned every compile (ES31 jumped 27->232). The undefined-storage-texel-format class needs a post-DXC SPIR-V image-format patch instead.
+
+### Remaining failure modes, ranked (cook21/23 buckets — the honest to-do list)
+1. `textureStore/textureLoad` on `texture_storage_*<undefined, read_write>` (~709, SM5 CS): DXC emits storage images with format Unknown; tint's overload resolution rejects the undefined texel format. Fix: patch a concrete image format into the SPIR-V (OpTypeImage word 9) from the HLSL type, in the bridge legalization pass — the DXC flag route is dead (above).
+2. WGSL uniformity analysis (~285): `'textureSample' must only be called from uniform control flow` (192), `workgroupBarrier` (59), `subgroupAny/All/Max/Shuffle` (34). Real WGSL semantic wall. Candidates: `textureSample`->`textureSampleLevel` rewrite where mip-0 is acceptable; case-by-case shader-source gating for the barrier ones.
+3. switch fallthrough not supported by tint's SPIR-V reader (1,288 banners on SM5). Needs a spirv-opt restructuring pass (e.g. eliminate fallthrough by duplicating case bodies) or a tint fix.
+4. Wave/subgroup gaps: `TINT_UNIMPLEMENTED` SPIR-V instructions 342/60/156 (subgroup ops), `BuiltIn 9` (ViewportIndex), plus HLSL-level `WaveBallot`/`WaveReadLaneLast` undeclared (Nanite, needs SM6 wave intrinsics our DXC profile lacks).
+5. Atomics through workgroup-storage pointers: `TINT_ASSERT(...Is<core::type::Atomic>())` (148 banners).
+6. 16-bit types (TSR: `int16_t4` etc., ~20): needs SM6.2 profile + `-enable-16bit-types` (SC wrapper supports it; requires shader-model plumbing in our loader).
+7. tint reader bug `store: %N is not in scope` (50).
+8. Small tail: `-HV 2021` overload redefinitions (ShaderPrintCommon `ClearCounters`/`ReadSymbol`, TSR `SafeRcp`, 6); SPV_EXT_shader_viewport_index_layer (2); storage read_write var in vertex stage (1, InstanceCullingOcclusionQueryVS); zero-length-vector normalize (1); Nanite UNKNOWN_ATOMIC_PLATFORM (1 — the prelude's WEBGPU_NANITE_VISBUFFER64 path is still dormant); geometry frequency (1, permanent).
+
+ES31's entire remaining failure list is 27 instances: FCapsuleShadowingCS (barrier uniformity), FGPUDebugCrashUtilsCS (deliberately-crashing debug shader), FSMAAEdgeDetectionPS + FLandscapeResampleMergedTexturePS + FHMDDistortionPS + FVisualizeHDRPS (textureSample uniformity), ShaderPrint (HV2021 redefinitions), FInstanceCullingOcclusionQueryVS (storage rw in VS), FWriteToBoundingSphereVS, SPV_EXT_shader_viewport_index_layer users.
+
+### Where things stand / files
+- Branch `dawnrhi-stage1`, all pushed: `f84f613` (module + crash guard + reflection + compute + gates), `d7de650` (tint features + legalizations + HLSL2021 + texel remap), `f6b00a2` (SIGTRAP + declared-bindings + the reverted-in-code DXC arg note), plus this update.
+- Engine-tree copies at `/mnt/models/ss-build/UnrealEngine` are in sync; bridge rebuild recipe: `/tmp/build_dawn_tint_bridge_so.sh` (framepick; after bridge/header edits also copy `tools/dawn_tint_bridge.h` -> `Engine/Source/ThirdParty/DawnTint/include/`). Editor/SCW rebuild: `RunUBT.sh {UnrealTournamentEditor,ShaderCompileWorker} Linux Development -NoUBA`.
+- cook23 (all fixes) was still cooking packages/materials at write time; its global numbers match cook21 exactly (ES31 27 / SM5 1,381) and it passed the point where cook21 died (LumenCardOutputs).
+
+### Ranked next steps toward a full UT4 map cook + the wasm target
+1. Storage-image format patching in the bridge (class #1, ~700 shaders) — word-level OpTypeImage format fix keyed off usage or a conservative R32-family default.
+2. Uniformity-analysis burn-down (class #2) — biggest remaining wall for post-processing/material pixel shaders.
+3. switch-fallthrough restructuring (class #3) — biggest remaining CS class.
+4. Runtime half: DawnRHI consumption of the cooked SF_WEBGPU shaders — bind groups from the now-real reflection (skip `bDeclaredOnly`; loose members via the $Globals UB; storage kinds), then render a cooked map in the wasm client.
+5. Cook a real UT map (`-Map=/Game/RestrictedAssets/Maps/DM-...`) and drive the full UT4 wasm target link (Update 12's toolchain).
