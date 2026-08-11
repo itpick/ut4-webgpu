@@ -2074,3 +2074,50 @@ Fatal error: ICUInternationalization.cpp Line 161: ICU data directory was not di
 **Next wall (ICU data — a content/filesystem step, NOT a closed subsystem):** the SimplyStream platform links `libicu64b.a` (bCompileICU=false on the target does not stop the platform linking it), and ICU init needs its `icudt*.dat` data, which is not present in the wasm MEMFS. Next step: either preload `Engine/Content/Internationalization/` into the wasm FS (`--preload-file` / packaged .data), or provide a minimal ICU data set / a no-i18n path. Then re-check how far PreInit gets toward `FModuleManager::LoadModule("DawnRHI")` / `RHIInit` / `FDawnDynamicRHI` device creation.
 
 **Files:** `Platforms/SimplyStream/patches/simplystream-toolchain-dawnrhitest-proxy.patch` (new), `host/dawnrhitest-shim.html` (new), `docs/simplystream-wasm-boot-update9.log` (new). `DawnRHITest.Target.cs` reverted (its AdditionalLinkerArguments are dropped by the toolchain — dead). Engine-tree toolchain edit lives at `Engine/Platforms/SimplyStream/Source/Programs/UnrealBuildTool/SimplyStreamToolChain.cs` (apply the patch there).
+
+
+## Update 10: ICU wall cleared — real DawnRHI wasm boots all the way through PreInit into the DawnRHITest program itself, now blocked on a hardcoded platform gate
+
+**Goal (from Update 9 next wall):** get the real DawnRHI wasm build past the ICU-data-directory-not-discovered Fatal so PreInit continues toward `FModuleManager::LoadModule("DawnRHI")` / `RHIInit` / `FDawnDynamicRHI` device creation.
+
+**Fix 1 — preload the ICU data into the wasm FS:** `FICUInternationalization::Initialize()` probes `<ContentDir>/Internationalization/icudt64l/` (SimplyStream links ICU 64 specifically — `Source/ThirdParty/ICU/icu4c-64_1`, `libicu64b.a`, confirmed by grep — not 53l/78l) via `FPaths::DirectoryExists`, and none of that existed in the wasm MEMFS. As established in Update 9, `DawnRHITest.Target.cs` `AdditionalLinkerArguments` are dead (dropped by `SimplyStreamToolChain.GetLinkArguments()`), so the fix is the same injection point as the `-sPROXY_TO_PTHREAD` patch: added an emcc `--preload-file "<EngineContentDir>/Internationalization/icudt64l@Engine/Content/Internationalization/icudt64l"` inside the same `if (OutputFilePath.Contains("DawnRHITest"))` block in `SimplyStreamToolChain.GetLinkArguments()`, using `Unreal.EngineDirectory` (already used elsewhere in the same file) rather than a hardcoded box path. Preloaded only the `icudt64l` subtree (33MB, 3463 loose `.res`/`.icu`/`.nrm` files) directly under `Engine/Content/Internationalization/` — not the `53l`/`78l` sibling versions, not the `All`/`CJK`/`EFIGS`/`English` culture-subset folders that also live under `Internationalization/` (279MB total tree vs 33MB for just the version actually linked). Patch: `Platforms/SimplyStream/patches/simplystream-toolchain-dawnrhitest-icu-preload.patch` (new — applies on top of Update 9's proxy patch, same file). Verified: rebuild produced a new `DawnRHITest.data` (22MB) alongside the `.js`/`.wasm`, and the ICU-directory-not-discovered Fatal disappeared.
+
+**Fix 2 — the real bug underneath (not a missing-file problem at all):** after Fix 1, hit a *new* fatal one level deeper: `Assertion failed: U_SUCCESS(ICUStatus)` / "Failed to open ICUInternationalization data file, missing or corrupt?" at `ICUInternationalization.cpp` `u_init()`. Root-caused with temporary diagnostic logging (added, verified, then fully reverted — no diagnostic code is in the shipped patch) added directly to `FICUInternationalization::OpenDataFile`:
+- `IFileManager::Get().FileExists()` on the exact relative path ICU requests (`../../../Engine/Content/Internationalization/icudt64l/cnvalias.icu`) returned **true**.
+- `FPaths::ConvertRelativePathToFull()` on that same path returned the **identical, unresolved relative string** — no BaseDir()-based absolutization happens on this platform.
+- A raw POSIX `stat()`/`open()` probe (bypassing UE's file abstraction entirely) on the literal relative string **succeeded** (`st_size=63982`, `open()` returned a valid fd, `errno=0`).
+- Yet `IFileManager::Get().CreateFileReader()` on that same relative string returned **null**.
+
+Traced this to `FUnixPlatformFile::OpenRead()` → `FUnixFileRegistry::PlatformInitialOpenFile()` → `FUnixFileMapper::OpenCaseInsensitiveRead()`, which unconditionally requires an absolute path (`Filename[0]=='/'`) and fails otherwise — unlike `FileExists`/`DirectoryExists`/`FileSize`, which go through `MapCaseInsensitiveFile` behind a `#if !UNIX_PLATFORM_FILE_SPEEDUP_FILE_OPERATIONS` guard that's compiled out on this platform (so those just `stat()` the literal string and never hit the absolute-path requirement). Net effect: any relative engine path reaches `FileExists`/`DirectoryExists` fine but silently fails to open for reading — a real platform-layer gap, not anything specific to ICU or to our preload.
+
+Fix, scoped to the one call site that matters for this milestone (not a platform-wide `FUnixPlatformFile`/`BaseDir()` fix — out of scope here): in `FICUInternationalization::OpenDataFile`, before calling `CreateFileReader`, strip any leading `../` segments and prepend `/` to turn the relative path into the absolute MEMFS path our preload actually populated (safe because every ICU data-dir candidate this code ever probes uses exactly the same "../../../" — 3 levels, matching the wasm binary's virtual CWD `Engine/Binaries/SimplyStream` — up-prefix, hardcoded in this same source file). Patch: `Platforms/SimplyStream/patches/core-icuinternationalization-simplystream-abspath.patch` (new — applies to the shared `Engine/Source/Runtime/Core/Private/Internationalization/ICUInternationalization.cpp`, not a SimplyStream-owned file, so recorded as a patch rather than a source addition).
+
+**Furthest boot point (real captured headless-Chrome console, `docs/simplystream-wasm-boot-update10.log`):** ICU is now fully clean — the only ICU log line left is the normal informational `LogICUInternationalization: ICU TimeZone Detection - Raw Offset: -6:00, Platform Override: ''`, no errors. PreInit continues through CVar loading, OS language/locale detection (falls back to `en` since no localization data is staged — expected, harmless), and all the way to the DawnRHITest program's own body:
+
+```
+IDynamicRHIModule* RHIModule = &FModuleManager::LoadModuleChecked<IDynamicRHIModule>(TEXT("DawnRHI"));
+checkf(RHIModule->IsSupported(), TEXT("DawnRHI: not supported on this platform"));
+```
+
+`LoadModuleChecked` **succeeds** (the DawnRHI module loads without incident — no crash there). It then hits:
+
+```
+Assertion failed: RHIModule->IsSupported() [File:./Programs/DawnRHITest/Private/DawnRHITestMain.cpp] [Line: 486]
+DawnRHI: not supported on this platform
+```
+
+**Next wall (a one-line, well-understood platform gate — not a filesystem/mechanical issue):** `Engine/Source/Runtime/DawnRHI/Private/DawnRHIModule.cpp`:
+```cpp
+virtual bool IsSupported() override
+{
+	// Stage 1: Linux/Vulkan-backed Dawn only.
+	return PLATFORM_LINUX;
+}
+```
+This is a deliberate placeholder from an earlier development stage that only allows the module on `PLATFORM_LINUX`; on the SimplyStream/wasm platform that's always false regardless of actual WebGPU/Dawn readiness. Next step for a future session: widen this gate to also allow the SimplyStream platform (and confirm `FDawnDynamicRHI::Init()` / device creation actually completes once the gate is open — that's genuinely untested past this point).
+
+**Environment note:** headless-Chrome capture on this box needs the `nix-shell -p cairo pango gtk3 nss nspr alsa-lib atk at-spi2-atk cups libdrm libxkbcommon mesa expat libxcb --run 'echo $NIX_LDFLAGS'`-derived `LD_LIBRARY_PATH` (per `DawnRHIWasmProbe/BUILD_RECIPE.md`) exported before launching the cached Playwright Chromium (`~/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome`) — otherwise it fails to even start (`libcairo.so.2`/`libglib-2.0.so.0` not found). `host/serve.py` was run pointed directly at `Engine/Binaries/SimplyStream` (where the build outputs + `dawnrhitest-shim.html` already live) rather than copying files around.
+
+**Security note:** this session's `framepick` SSH access went through this box's standing login banner (a standard authorized-use notice), consistent with the account this project has used throughout — nothing unusual encountered, no need to paste the banner text here.
+
+**Files:** `Platforms/SimplyStream/patches/simplystream-toolchain-dawnrhitest-icu-preload.patch` (new), `Platforms/SimplyStream/patches/core-icuinternationalization-simplystream-abspath.patch` (new), `docs/simplystream-wasm-boot-update10.log` (new). Engine-tree edits live at `Engine/Platforms/SimplyStream/Source/Programs/UnrealBuildTool/SimplyStreamToolChain.cs` and `Engine/Source/Runtime/Core/Private/Internationalization/ICUInternationalization.cpp` (apply both patches there).

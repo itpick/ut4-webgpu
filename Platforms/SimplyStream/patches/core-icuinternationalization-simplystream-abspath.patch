@@ -1,0 +1,36 @@
+--- /mnt/models/ss-build/UnrealEngine/Engine/Source/Runtime/Core/Private/Internationalization/ICUInternationalization.cpp.diag.bak	2026-08-10 23:04:16.729487378 -0500
++++ /mnt/models/ss-build/UnrealEngine/Engine/Source/Runtime/Core/Private/Internationalization/ICUInternationalization.cpp	2026-08-10 23:28:49.529012993 -0500
+@@ -821,8 +821,32 @@
+ 		FScopedLoadingState ScopedLoadingState(*PathStr);
+ #endif
+ 
++		// SimplyStream (wasm) note: FPaths::ProjectContentDir()/EngineContentDir() resolve to the
++		// engine-relative "../../../Engine/..." token unresolved here -- there is no BaseDir()-based
++		// absolutization on this platform the way real Linux does it (chdir to the binary's real,
++		// absolute directory at startup). FUnixPlatformFile::FileExists/DirectoryExists tolerate that
++		// relative token (this platform has UNIX_PLATFORM_FILE_SPEEDUP_FILE_OPERATIONS, which skips
++		// FUnixFileMapper::MapCaseInsensitiveFile and stats the literal string), which is why
++		// ICUDataDirectory got discovered fine above. But OpenRead / IFileManager::CreateFileReader
++		// always goes through FUnixFileRegistry::PlatformInitialOpenFile -> FUnixFileMapper::
++		// OpenCaseInsensitiveRead, which unconditionally requires an absolute path
++		// (checkf(Filename[0]=='/')) and otherwise silently fails -- even though a raw POSIX open() on
++		// the same relative string succeeds fine (verified directly against this build). Absolute-ify
++		// just for this read: the wasm binary's virtual CWD is Engine/Binaries/SimplyStream (3 levels
++		// below Engine/Content, matching every "../../../" prefix FICUInternationalization ever probes),
++		// and our preloaded ICU data lives at the matching MEMFS-root-anchored absolute path.
++		FString AbsolutePathStr = PathStr;
++		if (!AbsolutePathStr.StartsWith(TEXT("/")))
++		{
++			while (AbsolutePathStr.StartsWith(TEXT("../")))
++			{
++				AbsolutePathStr.RightChopInline(3);
++			}
++			AbsolutePathStr = TEXT("/") + AbsolutePathStr;
++		}
++
+ 		// Attempt to load the file.
+-		FArchive* FileAr = IFileManager::Get().CreateFileReader(*PathStr);
++		FArchive* FileAr = IFileManager::Get().CreateFileReader(*AbsolutePathStr);
+ 		if (FileAr)
+ 		{
+ 			const int64 FileSize = FileAr->TotalSize();

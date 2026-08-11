@@ -1,0 +1,239 @@
+Launching: /home/lucas/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome --headless=new --remote-debugging-port=9333 --enable-unsafe-webgpu --enable-features=Vulkan --ignore-gpu-blocklist --no-sandbox --disable-gpu-sandbox --use-gl=angle --use-angle=vulkan --user-data-dir=/tmp/chrome-cdp-profile-1786422851909 about:blank
+[chrome stderr] [1296718:1296718:0810/233412.005792:ERROR:ui/gl/angle_platform_impl.cc:47] vk_renderer.cpp:271 (VerifyExtensionsPresent): Extension not supported: VK_KHR_surface
+ERR: vk_renderer.cpp:271 (VerifyExtensionsPresent): Extension not supported: VK_KHR_surface
+[1296718:1296718:0810/233412.005852:ERROR:ui/gl/angle_platform_impl.cc:47] vk_renderer.cpp:271 (VerifyExtensionsPresent): Extension not supported: VK_KHR_xcb_surface
+ERR: vk_renderer.cpp:271 (VerifyExtensionsPresent): Extension not supported: VK_KHR_xcb_surface
+[1296718:1296718:0810/233412.005874:ERROR:ui/gl/angle_platform_impl.cc:47] Display.cpp:1097 (initialize): ANGLE Display::initialize error 0: Internal Vulkan error (-7): A requested extension is not supported, in ../../third_party/angle/src/libANGLE/renderer/vulkan/vk_renderer.cpp, enableInstanceExtensions:2432.
+ERR: Display.cpp:1097 (initialize): ANGLE Display::initialize error 0: Internal Vulkan error (-7): A requested extension is not supported, in ../../third_party/angle/src/libANGLE/renderer/vulkan/vk_renderer.cpp, enableInstanceExtensions:2432.
+[chrome stderr] [1296718:1296718:0810/233412.005894:ERROR:ui/gl/egl_util.cc:92] EGL Driver message (Critical) eglInitialize: Internal Vulkan error (-7): A requested extension is not supported, in ../../third_party/angle/src/libANGLE/renderer/vulkan/vk_renderer.cpp, enableInstanceExtensions:2432.
+[1296718:1296718:0810/233412.005901:ERROR:ui/gl/gl_display.cc:638] eglInitialize Vulkan failed with error EGL_NOT_INITIALIZED
+[1296718:1296718:0810/233412.005909:ERROR:ui/gl/gl_display.cc:673] Initialization of all (1) EGL display types failed.
+[1296718:1296718:0810/233412.005915:ERROR:ui/ozone/common/gl_ozone_egl.cc:26] GLDisplayEGL::Initialize failed.
+[chrome stderr] [1296718:1296718:0810/233412.006855:ERROR:ui/gl/angle_platform_impl.cc:47] vk_renderer.cpp:271 (VerifyExtensionsPresent): Extension not supported: VK_KHR_surface
+ERR: vk_renderer.cpp:271 (VerifyExtensionsPresent): Extension not supported: VK_KHR_surface
+[1296718:1296718:0810/233412.006870:ERROR:ui/gl/angle_platform_impl.cc:47] vk_renderer.cpp:271 (VerifyExtensionsPresent): Extension not supported: VK_KHR_xcb_surface
+ERR: vk_renderer.cpp:271 (VerifyExtensionsPresent): Extension not supported: VK_KHR_xcb_surface
+[1296718:1296718:0810/233412.006881:ERROR:ui/gl/angle_platform_impl.cc:47] Display.cpp:1097 (initialize): ANGLE Display::initialize error 0: Internal Vulkan error (-7): A requested extension is not supported, in ../../third_party/angle/src/libANGLE/renderer/vulkan/vk_renderer.cpp, enableInstanceExtensions:2432.
+ERR: Display.cpp:1097 (initialize): ANGLE Display::initialize error 0: Internal Vulkan error (-7): A requested extension is not supported, in ../../third_party/angle/src/libANGLE/renderer/vulkan/vk_renderer.cpp, enableInstanceExtensions:2432.
+[1296718:1296718:0810/233412.006890:ERROR:ui/gl/egl_util.cc:92] EGL Driver message (Critical) eglInitialize: Internal Vulkan error (-7): A requested extension is not supported, in ../../third_party/angle/src/libANGLE/renderer/vulkan/vk_renderer.cpp, enableInstanceExtensions:2432.
+[1296718:1296718:0810/233412.006893:ERROR:ui/gl/gl_display.cc:638] eglInitialize Vulkan failed with error EGL_NOT_INITIALIZED
+[1296718:1296718:0810/233412.006898:ERROR:ui/gl/gl_display.cc:673] Initialization of all (1) EGL display types failed.
+[1296718:1296718:0810/233412.006902:ERROR:ui/ozone/common/gl_ozone_egl.cc:26] GLDisplayEGL::Initialize failed.
+[chrome stderr] [1296718:1296718:0810/233412.007963:ERROR:components/viz/service/main/viz_main_impl.cc:190] Exiting GPU process due to errors during initialization
+[chrome stderr] 
+DevTools listening on ws://127.0.0.1:9333/devtools/browser/507d92f4-a457-4417-b662-797759046c5c
+[chrome stderr] [1296803:1296803:0810/233412.082356:ERROR:ui/gl/angle_platform_impl.cc:47] vk_renderer.cpp:271 (VerifyExtensionsPresent): Extension not supported: VK_KHR_surface
+ERR: vk_renderer.cpp:271 (VerifyExtensionsPresent): Extension not supported: VK_KHR_surface
+[1296803:1296803:0810/233412.082386:ERROR:ui/gl/angle_platform_impl.cc:47] vk_renderer.cpp:271 (VerifyExtensionsPresent): Extension not supported: VK_KHR_xcb_surface
+ERR: vk_renderer.cpp:271 (VerifyExtensionsPresent): Extension not supported: VK_KHR_xcb_surface
+[1296803:1296803:0810/233412.082398:ERROR:ui/gl/angle_platform_impl.cc:47] Display.cpp:1097 (initialize): ANGLE Display::initialize error 0: Internal Vulkan error (-7): A requested extension is not supported, in ../../third_party/angle/src/libANGLE/renderer/vulkan/vk_renderer.cpp, enableInstanceExtensions:2432.
+ERR: Display.cpp:1097 (initialize): ANGLE Display::initialize error 0: Internal Vulkan error (-7): A requested extension is not supported, in ../../third_party/angle/src/libANGLE/renderer/vulkan/vk_renderer.cpp, enableInstanceExtensions:2432.
+[chrome stderr] [1296803:1296803:0810/233412.082411:ERROR:ui/gl/egl_util.cc:92] EGL Driver message (Critical) eglInitialize: Internal Vulkan error (-7): A requested extension is not supported, in ../../third_party/angle/src/libANGLE/renderer/vulkan/vk_renderer.cpp, enableInstanceExtensions:2432.
+[1296803:1296803:0810/233412.082415:ERROR:ui/gl/gl_display.cc:638] eglInitialize Vulkan failed with error EGL_NOT_INITIALIZED
+[1296803:1296803:0810/233412.082420:ERROR:ui/gl/gl_display.cc:673] Initialization of all (1) EGL display types failed.
+[1296803:1296803:0810/233412.082423:ERROR:ui/ozone/common/gl_ozone_egl.cc:26] GLDisplayEGL::Initialize failed.
+[chrome stderr] [1296803:1296803:0810/233412.082855:ERROR:ui/gl/angle_platform_impl.cc:47] vk_renderer.cpp:271 (VerifyExtensionsPresent): Extension not supported: VK_KHR_surface
+ERR: vk_renderer.cpp:271 (VerifyExtensionsPresent): Extension not supported: VK_KHR_surface
+[1296803:1296803:0810/233412.082859:ERROR:ui/gl/angle_platform_impl.cc:47] vk_renderer.cpp:271 (VerifyExtensionsPresent): Extension not supported: VK_KHR_xcb_surface
+ERR: vk_renderer.cpp:271 (VerifyExtensionsPresent): Extension not supported: VK_KHR_xcb_surface
+[chrome stderr] [1296803:1296803:0810/233412.082863:ERROR:ui/gl/angle_platform_impl.cc:47] Display.cpp:1097 (initialize): ANGLE Display::initialize error 0: Internal Vulkan error (-7): A requested extension is not supported, in ../../third_party/angle/src/libANGLE/renderer/vulkan/vk_renderer.cpp, enableInstanceExtensions:2432.
+ERR: Display.cpp:1097 (initialize): ANGLE Display::initialize error 0: Internal Vulkan error (-7): A requested extension is not supported, in ../../third_party/angle/src/libANGLE/renderer/vulkan/vk_renderer.cpp, enableInstanceExtensions:2432.
+[1296803:1296803:0810/233412.082867:ERROR:ui/gl/egl_util.cc:92] EGL Driver message (Critical) eglInitialize: Internal Vulkan error (-7): A requested extension is not supported, in ../../third_party/angle/src/libANGLE/renderer/vulkan/vk_renderer.cpp, enableInstanceExtensions:2432.
+[1296803:1296803:0810/233412.082868:ERROR:ui/gl/gl_display.cc:638] eglInitialize Vulkan failed with error EGL_NOT_INITIALIZED
+[1296803:1296803:0810/233412.082869:ERROR:ui/gl/gl_display.cc:673] Initialization of all (1) EGL display types failed.
+[1296803:1296803:0810/233412.082871:ERROR:ui/ozone/common/gl_ozone_egl.cc:26] GLDisplayEGL::Initialize failed.
+[chrome stderr] [1296803:1296803:0810/233412.086599:ERROR:components/viz/service/main/viz_main_impl.cc:190] Exiting GPU process due to errors during initialization
+[chrome stderr] [1296836:1296836:0810/233412.135461:ERROR:ui/gl/angle_platform_impl.cc:47] vk_renderer.cpp:271 (VerifyExtensionsPresent): Extension not supported: VK_KHR_surface
+ERR: vk_renderer.cpp:271 (VerifyExtensionsPresent): Extension not supported: VK_KHR_surface
+[1296836:1296836:0810/233412.135509:ERROR:ui/gl/angle_platform_impl.cc:47] vk_renderer.cpp:271 (VerifyExtensionsPresent): Extension not supported: VK_KHR_xcb_surface
+ERR: vk_renderer.cpp:271 (VerifyExtensionsPresent): Extension not supported: VK_KHR_xcb_surface
+[1296836:1296836:0810/233412.135524:ERROR:ui/gl/angle_platform_impl.cc:47] Display.cpp:1097 (initialize): ANGLE Display::initialize error 0: Internal Vulkan error (-7): A requested extension is not supported, in ../../third_party/angle/src/libANGLE/renderer/vulkan/vk_renderer.cpp, enableInstanceExtensions:2432.
+ERR: Display.cpp:1097 (initialize): ANGLE Display::initialize error 0: Internal Vulkan error (-7): A requested extension is not supported, in ../../third_party/angle/src/libANGLE/renderer/vulkan/vk_renderer.cpp, enableInstanceExtensions:2432.
+[chrome stderr] [1296836:1296836:0810/233412.135546:ERROR:ui/gl/egl_util.cc:92] EGL Driver message (Critical) eglInitialize: Internal Vulkan error (-7): A requested extension is not supported, in ../../third_party/angle/src/libANGLE/renderer/vulkan/vk_renderer.cpp, enableInstanceExtensions:2432.
+[1296836:1296836:0810/233412.135549:ERROR:ui/gl/gl_display.cc:638] eglInitialize Vulkan failed with error EGL_NOT_INITIALIZED
+[1296836:1296836:0810/233412.135558:ERROR:ui/gl/gl_display.cc:673] Initialization of all (1) EGL display types failed.
+[1296836:1296836:0810/233412.135566:ERROR:ui/ozone/common/gl_ozone_egl.cc:26] GLDisplayEGL::Initialize failed.
+[chrome stderr] [1296836:1296836:0810/233412.136248:ERROR:ui/gl/angle_platform_impl.cc:47] vk_renderer.cpp:271 (VerifyExtensionsPresent): Extension not supported: VK_KHR_surface
+ERR: vk_renderer.cpp:271 (VerifyExtensionsPresent): Extension not supported: VK_KHR_surface
+[1296836:1296836:0810/233412.136255:ERROR:ui/gl/angle_platform_impl.cc:47] vk_renderer.cpp:271 (VerifyExtensionsPresent): Extension not supported: VK_KHR_xcb_surface
+ERR: vk_renderer.cpp:271 (VerifyExtensionsPresent): Extension not supported: VK_KHR_xcb_surface
+[1296836:1296836:0810/233412.136263:ERROR:ui/gl/angle_platform_impl.cc:47] Display.cpp:1097 (initialize): ANGLE Display::initialize error 0: Internal Vulkan error (-7): A requested extension is not supported, in ../../third_party/angle/src/libANGLE/renderer/vulkan/vk_renderer.cpp, enableInstanceExtensions:2432.
+ERR: Display.cpp:1097 (initialize): ANGLE Display::initialize error 0: Internal Vulkan error (-7): A requested extension is not supported, in ../../third_party/angle/src/libANGLE/renderer/vulkan/vk_renderer.cpp, enableInstanceExtensions:2432.
+[chrome stderr] [1296836:1296836:0810/233412.136270:ERROR:ui/gl/egl_util.cc:92] EGL Driver message (Critical) eglInitialize: Internal Vulkan error (-7): A requested extension is not supported, in ../../third_party/angle/src/libANGLE/renderer/vulkan/vk_renderer.cpp, enableInstanceExtensions:2432.
+[1296836:1296836:0810/233412.136273:ERROR:ui/gl/gl_display.cc:638] eglInitialize Vulkan failed with error EGL_NOT_INITIALIZED
+[1296836:1296836:0810/233412.136275:ERROR:ui/gl/gl_display.cc:673] Initialization of all (1) EGL display types failed.
+[1296836:1296836:0810/233412.136278:ERROR:ui/ozone/common/gl_ozone_egl.cc:26] GLDisplayEGL::Initialize failed.
+[chrome stderr] [1296836:1296836:0810/233412.137497:ERROR:components/viz/service/main/viz_main_impl.cc:190] Exiting GPU process due to errors during initialization
+[chrome stderr] [1296857:1296857:0810/233412.172012:ERROR:ui/gl/angle_platform_impl.cc:47] vk_renderer.cpp:271 (VerifyExtensionsPresent): Extension not supported: VK_KHR_surface
+ERR: vk_renderer.cpp:271 (VerifyExtensionsPresent): Extension not supported: VK_KHR_surface
+[1296857:1296857:0810/233412.172047:ERROR:ui/gl/angle_platform_impl.cc:47] vk_renderer.cpp:271 (VerifyExtensionsPresent): Extension not supported: VK_KHR_xcb_surface
+ERR: vk_renderer.cpp:271 (VerifyExtensionsPresent): Extension not supported: VK_KHR_xcb_surface
+[1296857:1296857:0810/233412.172061:ERROR:ui/gl/angle_platform_impl.cc:47] Display.cpp:1097 (initialize): ANGLE Display::initialize error 0: Internal Vulkan error (-7): A requested extension is not supported, in ../../third_party/angle/src/libANGLE/renderer/vulkan/vk_renderer.cpp, enableInstanceExtensions:2432.
+ERR: Display.cpp:1097 (initialize): ANGLE Display::initialize error 0: Internal Vulkan error (-7): A requested extension is not supported, in ../../third_party/angle/src/libANGLE/renderer/vulkan/vk_renderer.cpp, enableInstanceExtensions:2432.
+[chrome stderr] [1296857:1296857:0810/233412.172079:ERROR:ui/gl/egl_util.cc:92] EGL Driver message (Critical) eglInitialize: Internal Vulkan error (-7): A requested extension is not supported, in ../../third_party/angle/src/libANGLE/renderer/vulkan/vk_renderer.cpp, enableInstanceExtensions:2432.
+[1296857:1296857:0810/233412.172085:ERROR:ui/gl/gl_display.cc:638] eglInitialize Vulkan failed with error EGL_NOT_INITIALIZED
+[1296857:1296857:0810/233412.172094:ERROR:ui/gl/gl_display.cc:673] Initialization of all (1) EGL display types failed.
+[1296857:1296857:0810/233412.172105:ERROR:ui/ozone/common/gl_ozone_egl.cc:26] GLDisplayEGL::Initialize failed.
+[chrome stderr] [1296857:1296857:0810/233412.172591:ERROR:ui/gl/angle_platform_impl.cc:47] vk_renderer.cpp:271 (VerifyExtensionsPresent): Extension not supported: VK_KHR_surface
+ERR: vk_renderer.cpp:271 (VerifyExtensionsPresent): Extension not supported: VK_KHR_surface
+[1296857:1296857:0810/233412.172598:ERROR:ui/gl/angle_platform_impl.cc:47] vk_renderer.cpp:271 (VerifyExtensionsPresent): Extension not supported: VK_KHR_xcb_surface
+ERR: vk_renderer.cpp:271 (VerifyExtensionsPresent): Extension not supported: VK_KHR_xcb_surface
+[chrome stderr] [1296857:1296857:0810/233412.172604:ERROR:ui/gl/angle_platform_impl.cc:47] Display.cpp:1097 (initialize): ANGLE Display::initialize error 0: Internal Vulkan error (-7): A requested extension is not supported, in ../../third_party/angle/src/libANGLE/renderer/vulkan/vk_renderer.cpp, enableInstanceExtensions:2432.
+ERR: Display.cpp:1097 (initialize): ANGLE Display::initialize error 0: Internal Vulkan error (-7): A requested extension is not supported, in ../../third_party/angle/src/libANGLE/renderer/vulkan/vk_renderer.cpp, enableInstanceExtensions:2432.
+[1296857:1296857:0810/233412.172609:ERROR:ui/gl/egl_util.cc:92] EGL Driver message (Critical) eglInitialize: Internal Vulkan error (-7): A requested extension is not supported, in ../../third_party/angle/src/libANGLE/renderer/vulkan/vk_renderer.cpp, enableInstanceExtensions:2432.
+[1296857:1296857:0810/233412.172611:ERROR:ui/gl/gl_display.cc:638] eglInitialize Vulkan failed with error EGL_NOT_INITIALIZED
+[1296857:1296857:0810/233412.172614:ERROR:ui/gl/gl_display.cc:673] Initialization of all (1) EGL display types failed.
+[1296857:1296857:0810/233412.172616:ERROR:ui/ozone/common/gl_ozone_egl.cc:26] GLDisplayEGL::Initialize failed.
+[chrome stderr] [1296857:1296857:0810/233412.173654:ERROR:components/viz/service/main/viz_main_impl.cc:190] Exiting GPU process due to errors during initialization
+CDP is up.
+Target ws: ws://127.0.0.1:9333/devtools/page/58C8CEC8187CC44290B9090E9A7DC96F
+[chrome stderr] [1296683:1296699:0810/233418.659526:ERROR:google_apis/gcm/engine/registration_request.cc:291] Registration response error message: DEPRECATED_ENDPOINT
+===== CAPTURED CONSOLE OUTPUT =====
+[log.error] Failed to load resource: the server responded with a status of 404 (File not found)
+[console.error] Used memory before allocating anything was 4.90MB
+[console.log] *** onRuntimeInitialized — wasm instantiated ***
+[console.error] Ensure condition failed: oldValue == newValue [File:./Runtime/Core/Private/HAL/ThreadingBase.cpp] [Line: 201] 
+[console.error] oldValue(1) newValue(0) If this check fails make sure that there is a FTaskTagScope(ETaskTag::EGameThread) as deep as possible on the current callstack, you can see the current value in ActiveNamedThreads(1)
+[console.error] LogOutputDevice: Error: === Handled ensure: ===
+[console.error] LogOutputDevice: Error: 
+[console.error] LogOutputDevice: Error: Ensure condition failed: oldValue == newValue  [File:./Runtime/Core/Private/HAL/ThreadingBase.cpp] [Line: 201] 
+[console.error] LogOutputDevice: Error: oldValue(1) newValue(0) If this check fails make sure that there is a FTaskTagScope(ETaskTag::EGameThread) as deep as possible on the current callstack, you can see the current value in ActiveNamedThreads(1)
+[console.error] LogOutputDevice: Error: Stack: 
+[console.error] LogOutputDevice: Error: 
+[console.error] LogInit: Running DelayedAutoRegister Phase StartOfEnginePreInit
+[console.error] LogInit: Running DelayedAutoRegister Phase FileSystemReady
+[console.error] LogStats: FPlatformStackWalk::StackWalkAndDump -  0.000 s
+[console.error] LogOutputDevice: Error: === Handled ensure: ===
+[console.error] LogOutputDevice: Error: 
+[console.error] LogOutputDevice: Error: Ensure condition failed: oldValue == newValue  [File:./Runtime/Core/Private/HAL/ThreadingBase.cpp] [Line: 201] 
+[console.error] LogOutputDevice: Error: oldValue(1) newValue(0) If this check fails make sure that there is a FTaskTagScope(ETaskTag::EGameThread) as deep as possible on the current callstack, you can see the current value in ActiveNamedThreads(1)
+[console.error] LogOutputDevice: Error: Stack: 
+[console.error] LogOutputDevice: Error: 
+[console.error] LogStats:             FDebug::EnsureFailed -  0.002 s
+[console.error] LogInit: Running DelayedAutoRegister Phase TaskGraphSystemReady
+[console.error] LogStats: Stats thread started at 0.060460
+[console.error] LogInit: Running DelayedAutoRegister Phase StatSystemReady
+[console.error] LogICUInternationalization: ICU TimeZone Detection - Raw Offset: -6:00, Platform Override: ''
+[console.error] LogInit: Session CrashGUID >====================================================
+[console.error]          Session CrashGUID >   UECC-SimplyStream-4495386908DEF737E27A9B8CFFFFFFFF
+[console.error]          Session CrashGUID >====================================================
+[console.error] LogConfig: No local boot hotfix file found at: [../../../Engine/Programs/DawnRHITest/Saved/PersistentDownloadDir/HotfixForNextBoot.txt]
+[console.error] LogInit: Running DelayedAutoRegister Phase IniSystemReady
+[console.error] LogInit: Running DelayedAutoRegister Phase EarliestPossiblePluginsLoaded
+[console.error] LogInit: ExecutableName: DawnRHITest
+[console.error] LogInit: Build: UE5-CL-0
+[console.error] LogInit: Platform=SimplyStream
+[console.error] LogInit: MachineId=4dfbcb6908def737e27a5ffaffffffff
+[console.error] LogInit: DeviceId=
+[console.error] LogInit: Engine Version: 5.8.1-0+UE5
+[console.error] LogInit: Compatible Engine Version: 5.8.0-0+UE5
+[console.error] LogInit: Net CL: 0
+[console.error] LogInit: OS: GenericOSVersionLabel (GenericOSSubVersionLabel), CPU: GenericCPUBrand, GPU: GenericGPUBrand
+[console.error] LogInit: CPU Model ID: 0, microcode revision: 0
+[console.error] LogInit: Compiled (64-bit): Aug 10 2026 21:47:30
+[console.error] LogInit: Architecture: arm64
+[console.error] LogInit: Compiled with Clang: 24.0.0git (https:/github.com/llvm/llvm-project ff6d537b14d737719d6377789784d04ff9565f65)
+[console.error] LogInit: Build Configuration: Development
+[console.error] LogInit: Branch Name: UE5
+[console.error] LogInit: Command Line:  -nocrashreports
+[console.error] LogInit: Base Directory: 
+[console.error] LogInit: Allocator: ANSI
+[console.error] LogInit: Installed Engine Build: 0
+[console.error] LogInit: This binary is optimized with LTO: no, PGO: no, instrumented for PGO data collection: no
+[console.error] LogDevObjectVersion: Number of dev versions registered: 35
+[console.error] LogDevObjectVersion:   Dev-Blueprints (B0D832E4-1F89-4F0D-ACCF-7EB736FD4AA2): 10
+[console.error] LogDevObjectVersion:   Dev-Build (E1C64328-A22C-4D53-A36C-8E866417BD8C): 0
+[console.error] LogDevObjectVersion:   Dev-Core (375EC13C-06E4-48FB-B500-84F0262A717E): 4
+[console.error] LogDevObjectVersion:   Dev-Editor (E4B068ED-F494-42E9-A231-DA0B2E46BB41): 40
+[console.error] LogDevObjectVersion:   Dev-Framework (CFFC743F-43B0-4480-9391-14DF171D2073): 37
+[console.error] LogDevObjectVersion:   Dev-Mobile (B02B49B5-BB20-44E9-A304-32B752E40360): 3
+[console.error] LogDevObjectVersion:   Dev-Networking (A4E4105C-59A1-49B5-A7C5-40C4547EDFEE): 0
+[console.error] LogDevObjectVersion:   Dev-Online (39C831C9-5AE6-47DC-9A44-9C173E1C8E7C): 0
+[console.error] LogDevObjectVersion:   Dev-Physics (78F01B33-EBEA-4F98-B9B4-84EACCB95AA2): 20
+[console.error] LogDevObjectVersion:   Dev-Platform (6631380F-2D4D-43E0-8009-CF276956A95A): 0
+[console.error] LogDevObjectVersion:   Dev-Rendering (12F88B9F-8875-4AFC-A67C-D90C383ABD29): 49
+[console.error] LogDevObjectVersion:   Dev-Sequencer (7B5AE74C-D270-4C10-A958-57980B212A5A): 13
+[console.error] LogDevObjectVersion:   Dev-VR (D7296918-1DD6-4BDD-9DE2-64A83CC13884): 3
+[console.error] LogDevObjectVersion:   Dev-LoadTimes (C2A15278-BFE7-4AFE-6C17-90FF531DF755): 1
+[console.error] LogDevObjectVersion:   Private-Geometry (6EACA3D4-40EC-4CC1-B786-8BED09428FC5): 3
+[console.error] LogDevObjectVersion:   Dev-AnimPhys (29E575DD-E0A3-4627-9D10-D276232CDCEA): 17
+[console.error] LogDevObjectVersion:   Dev-Anim (AF43A65D-7FD3-4947-9873-3E8ED9C1BB05): 15
+[console.error] LogDevObjectVersion:   Dev-ReflectionCapture (6B266CEC-1EC7-4B8F-A30B-E4D90942FC07): 1
+[console.error] LogDevObjectVersion:   Dev-Automation (0DF73D61-A23F-47EA-B727-89E90C41499A): 1
+[console.error] LogDevObjectVersion:   FortniteMain (601D1886-AC64-4F84-AA16-D3DE0DEAC7D6): 268
+[console.error] LogDevObjectVersion:   FortniteValkyrie (8DBC2C5B-54A7-43E0-A768-FCBB7DA29060): 8
+[console.error] LogDevObjectVersion:   FortniteSeason (5B4C06B7-2463-4AF8-805B-BF70CDF5D0DD): 15
+[console.error] LogDevObjectVersion:   FortniteRelease (E7086368-6B23-4C58-8439-1B7016265E91): 20
+[console.error] LogDevObjectVersion:   Dev-Enterprise (9DFFBCD6-494F-0158-E221-12823C92A888): 11
+[console.error] LogDevObjectVersion:   Dev-Niagara (F2AED0AC-9AFE-416F-8664-AA7FFA26D6FC): 1
+[console.error] LogDevObjectVersion:   Dev-Destruction (174F1F0B-B4C6-45A5-B13F-2EE8D0FB917D): 10
+[console.error] LogDevObjectVersion:   Dev-Physics-Ext (35F94A83-E258-406C-A318-09F59610247C): 41
+[console.error] LogDevObjectVersion:   Dev-PhysicsMaterial-Chaos (B68FC16E-8B1B-42E2-B453-215C058844FE): 1
+[console.error] LogDevObjectVersion:   Dev-CineCamera (B2E18506-4273-CFC2-A54E-F4BB758BBA07): 1
+[console.error] LogDevObjectVersion:   Dev-VirtualProduction (64F58936-FD1B-42BA-BA96-7289D5D0FA4E): 1
+[console.error] LogDevObjectVersion:   UE5-Main (697DD581-E64F-41AB-AA4A-51ECBEB7B628): 123
+[console.error] LogDevObjectVersion:   UE5-Release (D89B5E42-24BD-4D46-8412-ACA8DF641779): 68
+[console.error] LogDevObjectVersion:   UE5-SpecialProject (59DA5D52-1232-4948-B878-597870B8E98B): 9
+[console.error] LogDevObjectVersion:   Dev-MediaFramework (6F0ED827-A609-4895-9C91-998D90180EA4): 2
+[console.error] LogDevObjectVersion:   Dev-NaniteResearch (30D58BE3-95EA-4282-A6E3-B159D8EBB06A): 1
+[console.error] LogConfig: Applying CVar settings from Section [Startup] File [../../../Engine/Config/ConsoleVariables.ini]
+[console.error] [2026.08.11-04.34.12:835][  0]LogConfig: Applying CVar settings from Section [Startup_SimplyStream] File [../../../Engine/Config/ConsoleVariables.ini]
+[console.error] [2026.08.11-04.34.12:836][  0]LogConfig: Applying CVar settings from Section [ConsoleVariables] File [Engine]
+[console.error] [2026.08.11-04.34.12:836][  0]LogInit: SimplyStreamUsingLowCores: 0
+[console.error] [2026.08.11-04.34.12:836][  0]LogInit: Memory total: Physical=3.9GB (4GB approx) 
+[console.error] LogPaths: Warning: No paths for game localization data were specifed in the game configuration.
+[console.error] [2026.08.11-04.34.12:836][  0]LogPaths: Warning: No paths for game localization data were specifed in the game configuration.
+[console.error] [2026.08.11-04.34.12:836][  0]LogInit: Using OS detected language (en-US-POSIX).
+[console.error] [2026.08.11-04.34.12:836][  0]LogInit: Using OS detected locale (en-US-POSIX).
+[console.error] LogInit: Warning: No paths for engine localization data were specifed in the engine configuration.
+[console.error] [2026.08.11-04.34.12:836][  0]LogInit: Warning: No paths for engine localization data were specifed in the engine configuration.
+[console.error] [2026.08.11-04.34.12:837][  0]LogTextLocalizationManager: No localization for 'en-US-POSIX' exists, so 'en' will be used for the language.
+[console.error] [2026.08.11-04.34.12:837][  0]LogTextLocalizationManager: No localization for 'en-US-POSIX' exists, so 'en' will be used for the locale.
+[console.error] [2026.08.11-04.34.12:838][  0]LogInit: Using OS detected language (en-US-POSIX).
+[console.error] [2026.08.11-04.34.12:838][  0]LogInit: Using OS detected locale (en-US-POSIX).
+[console.error] [2026.08.11-04.34.12:839][  0]LogTextLocalizationManager: No localization for 'en-US-POSIX' exists, so 'en' will be used for the language.
+[console.error] [2026.08.11-04.34.12:839][  0]LogTextLocalizationManager: No localization for 'en-US-POSIX' exists, so 'en' will be used for the locale.
+[console.error] 
+[console.error] appError called: 
+[console.error] Assertion failed: RHIModule->IsSupported() [File:./Programs/DawnRHITest/Private/DawnRHITestMain.cpp] [Line: 486] 
+[console.error] DawnRHI: not supported on this platform
+[console.error] 
+[console.error] LogHAL: Error: appError called: Assertion failed: RHIModule->IsSupported() [File:./Programs/DawnRHITest/Private/DawnRHITestMain.cpp] [Line: 486] 
+[console.error] DawnRHI: not supported on this platform
+[console.error] 
+[console.error] [2026.08.11-04.34.12:839][  0]LogHAL: Error: appError called: Assertion failed: RHIModule->IsSupported() [File:./Programs/DawnRHITest/Private/DawnRHITestMain.cpp] [Line: 486] 
+[console.error] DawnRHI: not supported on this platform
+[console.error] 
+[console.error] [2026.08.11-04.34.12:839][  0]LogHAL: === Critical error: ===
+[console.error] 
+[console.error] 
+[console.error] 
+[console.error] [2026.08.11-04.34.12:840][  0]LogHAL: Assertion failed: RHIModule->IsSupported() [File:./Programs/DawnRHITest/Private/DawnRHITestMain.cpp] [Line: 486] 
+[console.error] DawnRHI: not supported on this platform
+[console.error] 
+[console.error] 
+[console.error] 
+[console.error] 
+[console.error] 
+[console.error] Exiting due to error
+[console.error] [2026.08.11-04.34.12:840][  0]LogGenericPlatformMisc: FPlatformMisc::RequestExit(1, FOutputDeviceAnsiError::Serialize.!GIsGuarded)
+[console.error] ABORT: native code called abort()
+[console.error] Aborted(native code called abort())
+[console.error] worker: onmessage() captured an uncaught exception: RuntimeError: Aborted(native code called abort())
+[console.error] RuntimeError: Aborted(native code called abort())
+    at abort (http://127.0.0.1:8799/DawnRHITest.js:2970:11)
+    at __abort_js (http://127.0.0.1:8799/DawnRHITest.js:7196:7)
+    at http://127.0.0.1:8799/DawnRHITest.wasm:wasm-function[31431]:0x874ce4
+    at http://127.0.0.1:8799/DawnRHITest.wasm:wasm-function[1516]:0x73e3b
+    at http://127.0.0.1:8799/DawnRHITest.wasm:wasm-function[4760]:0x14c3e8
+    at http://127.0.0.1:8799/DawnRHITest.wasm:wasm-function[951]:0x4f230
+    at http://127.0.0.1:8799/DawnRHITest.wasm:wasm-function[301]:0x1dfc6
+    at http://127.0.0.1:8799/DawnRHITest.wasm:wasm-function[135]:0x140f9
+    at http://127.0.0.1:8799/DawnRHITest.wasm:wasm-function[25301]:0x54b74d
+    at http://127.0.0.1:8799/DawnRHITest.wasm:wasm-function[25306]:0x54d4a6
+[console.error] Pthread 0x0000000020d20eb8 sent an error! http://127.0.0.1:8799/DawnRHITest.js:2830: Uncaught RuntimeError: Aborted(native code called abort())
+[console.error] window.onerror: Uncaught [object ErrorEvent]
+[exception] {"exceptionId":1,"text":"Uncaught","lineNumber":3488,"columnNumber":10,"scriptId":"6","url":"http://127.0.0.1:8799/DawnRHITest.js","stackTrace":{"callFrames":[{"functionName":"worker.onerror","scriptId":"6","url":"http://127.0.0.1:8799/DawnRHITest.js","lineNumber":3488,"columnNumber":10}]},"exception":{"type":"object","className":"ErrorEvent","description":"ErrorEvent","objectId":"3755783951001592626.1.1","preview":{"type":"object","description":"ErrorEvent","overflow":true,"properties":[{"name":"isTrusted","type":"boolean","value":"true"},{"name":"message","type":"string","value":"Uncaught RuntimeError: Aborted(native code called abort())"},{"name":"filename","type":"string","value":"http://127.0.0.1:8799/DawnRHITest.js"},{"name":"lineno","type":"number","value":"2830"},{"name":"colno","type":"number","value":"7"}]}},"executionContextId":1}
+[console.error] window.onerror: Uncaught RuntimeError: Aborted(native code called abort())
+[log.error] Uncaught RuntimeError: Aborted(native code called abort())
+===== END (137 messages) =====

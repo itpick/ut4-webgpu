@@ -1,0 +1,26 @@
+--- /mnt/models/ss-build/UnrealEngine/Engine/Platforms/SimplyStream/Source/Programs/UnrealBuildTool/SimplyStreamToolChain.cs.bak2	2026-08-10 22:49:31.670034073 -0500
++++ /mnt/models/ss-build/UnrealEngine/Engine/Platforms/SimplyStream/Source/Programs/UnrealBuildTool/SimplyStreamToolChain.cs	2026-08-10 22:50:02.954418263 -0500
+@@ -818,7 +818,22 @@
+ 				// behaviour on 5.x is what the =0 path used to ask for.
+ 			}
+ 
+-			if (LinkEnvironment.OutputFilePath.GetFileName().Contains("DawnRHITest")) { Result += " -sPROXY_TO_PTHREAD"; } // DawnRHITest offscreen boot: engine loop off the browser main thread
++			if (LinkEnvironment.OutputFilePath.GetFileName().Contains("DawnRHITest"))
++			{
++				Result += " -sPROXY_TO_PTHREAD"; // DawnRHITest offscreen boot: engine loop off the browser main thread
++
++				// ICU internationalization data: FICUInternationalization::Initialize() (Engine/Source/Runtime/Core/Private/
++				// Internationalization/ICUInternationalization.cpp) probes <ContentDir>/Internationalization/icudt64l/ via
++				// FPaths::DirectoryExists + loose-file udata opens. SimplyStream links ICU 64 (see Source/ThirdParty/ICU/
++				// icu4c-64_1, libicu64b.a) so it is icudt64l specifically, not 53l/78l. None of that is in the wasm MEMFS by
++				// default, so PreInit hits a Fatal there. Preload just the icudt64l data -- not the 53l/78l siblings, not the
++				// CJK/EFIGS/English/All subset folders under Content/Internationalization (~33MB vs ~279MB for the whole tree)
++				// -- at the exact relative path UE resolves at runtime: the wasm binary's virtual CWD is Engine/Binaries/
++				// SimplyStream, so its "../../../Engine/Content/Internationalization" probe lands on
++				// /Engine/Content/Internationalization in the MEMFS root.
++				string ICUDataSrcDir = DirectoryReference.Combine(Unreal.EngineDirectory, "Content", "Internationalization", "icudt64l").FullName;
++				Result += $" --preload-file \"{ICUDataSrcDir}@Engine/Content/Internationalization/icudt64l\"";
++			}
+ 			return Result;
+ 		}
+ 
