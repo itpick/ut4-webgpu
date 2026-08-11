@@ -88,7 +88,10 @@ void CompileDawnShader(
 
 	TArray<uint32> Spirv;
 	FString ScError;
-	if (!ScLoader.CompileHlslToSpirv(SourceUtf8.Get(), NameUtf8.Get(), EntryUtf8.Get(), Stage, /*bDisableOptimizations=*/true, Spirv, ScError))
+	// Honor the engine's per-shader HLSL2021 request (template-based shaders
+	// set CFLAG_HLSL2021; they cannot compile under -HV 2018 and vice versa).
+	const bool bHlsl2021 = Input.Environment.CompilerFlags.Contains(CFLAG_HLSL2021);
+	if (!ScLoader.CompileHlslToSpirv(SourceUtf8.Get(), NameUtf8.Get(), EntryUtf8.Get(), Stage, /*bDisableOptimizations=*/true, bHlsl2021, Spirv, ScError))
 	{
 		Output.bSucceeded = false;
 		Output.Errors.Add(FShaderCompilerError(*FString::Printf(TEXT("DawnShaderFormat: ShaderConductor HLSL->SPIR-V failed: %s"), *ScError)));

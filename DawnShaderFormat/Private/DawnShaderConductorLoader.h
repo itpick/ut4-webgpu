@@ -58,6 +58,7 @@ public:
 		const char* EntryPoint,
 		ShaderConductor::ShaderStage Stage,
 		bool bDisableOptimizations,
+		bool bHlsl2021,
 		TArray<uint32>& OutSpirv,
 		FString& OutError);
 

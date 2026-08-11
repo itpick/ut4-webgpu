@@ -16,7 +16,7 @@
 #include "Misc/Paths.h"
 #include "ShaderCore.h" // AddShaderSourceDirectoryMapping
 
-static const FGuid UE_SHADER_WEBGPU_VER = FGuid("8D4F2A17-6C3E-4B9A-A1D8-5E7B0C9F3A26");
+static const FGuid UE_SHADER_WEBGPU_VER = FGuid("2B6E9C43-7D1A-4F5E-B8C2-0A3D6F9E4B17");
 
 class FShaderFormatWebGPU : public UE::ShaderCompilerCommon::FBaseShaderFormat
 {
@@ -56,6 +56,20 @@ public:
 		Input.Environment.SetDefine(TEXT("COMPILER_HLSLCC"), 1);
 		Input.Environment.SetDefine(TEXT("COMPILER_WEBGPU"), 1);
 		Input.Environment.SetDefine(TEXT("OVERRIDE_PLATFORMCOMMON_USH"), 1);
+		// WGSL/tint has NO texel-buffer type: every HLSL Buffer<T>/RWBuffer<T>
+		// becomes SPIR-V OpTypeImage Dim=Buffer, which tint's SPIR-V reader
+		// hard-ICEs on ("Unsupported texture dimension: 5" -- the single
+		// largest failure class in the first full UT cook: ~5k banners, every
+		// SM5 material's manual-vertex-fetch VS and every ES31 material's
+		// GPUScene access). Remap them to structured buffers at the
+		// preprocessor level (the approach our PlatformCommon.ush prelude
+		// documents as "RWBuffer ... set in C++"). Element layouts match for
+		// the 32-bit formats UE uses on these paths; typed-format conversion
+		// semantics (rare here) are a runtime-side concern. Known cost:
+		// shaders that name an identifier literally "Buffer" break -- vastly
+		// fewer than the class this fixes (measured, not guessed).
+		Input.Environment.SetDefine(TEXT("Buffer"), TEXT("StructuredBuffer"));
+		Input.Environment.SetDefine(TEXT("RWBuffer"), TEXT("RWStructuredBuffer"));
 		if (Input.ShaderFormat == NAME_SF_WEBGPU_ES31_Mod)
 		{
 			Input.Environment.SetDefine(TEXT("ES3_1_PROFILE"), 1);

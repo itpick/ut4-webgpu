@@ -108,6 +108,7 @@ bool FDawnShaderConductorLoader::CompileHlslToSpirv(
 	const char* EntryPoint,
 	ShaderConductor::ShaderStage Stage,
 	bool bDisableOptimizations,
+	bool bHlsl2021,
 	TArray<uint32>& OutSpirv,
 	FString& OutError)
 {
@@ -144,9 +145,15 @@ bool FDawnShaderConductorLoader::CompileHlslToSpirv(
 	// short-circuiting logical binary operator must be scalar, for
 	// non-scalar types use 'and'/'or'" at every real vector &&/|| use
 	// site; explicit -HV 2018 made that whole error class disappear.
-	static const char* ExtraArgs[] = { "-fspv-target-env=vulkan1.1", "-HV", "2018" };
+	// Per-shader HLSL version: shaders carrying CFLAG_HLSL2021 (template-based
+	// engine code like LaneVectorization.ush / Nanite traversal / TSR) REQUIRE
+	// -HV 2021 ('template' is reserved pre-2021: ~70 real global-shader
+	// failures in the first full UT cook); everything else must stay -HV 2018
+	// (see the long note above -- 2021 breaks pervasive vector &&/||).
+	static const char* ExtraArgs2018[] = { "-fspv-target-env=vulkan1.1", "-HV", "2018" };
+	static const char* ExtraArgs2021[] = { "-fspv-target-env=vulkan1.1", "-HV", "2021" };
 	Options.numDXCArgs = 3;
-	Options.DXCArgs = ExtraArgs;
+	Options.DXCArgs = bHlsl2021 ? ExtraArgs2021 : ExtraArgs2018;
 
 	Compiler::TargetDesc Target = {};
 	Target.language = ShadingLanguage::SpirV;

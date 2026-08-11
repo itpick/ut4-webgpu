@@ -96,6 +96,18 @@ namespace
 	bool SpirvToWgsl(const std::vector<uint32_t>& Spirv, std::string& OutWgsl, std::string& OutError)
 	{
 		tint::spirv::reader::Options ReadOpts = {};
+		// Allow every WGSL extension/language feature (notably
+		// readonly_and_readwrite_storage_textures) and derivative builtins in
+		// non-uniform control flow: with the default (empty) feature set, the
+		// first full UT cook (2026-08-11) failed ~750 real global shaders on
+		// "read-write storage textures require the readonly_and_readwrite_-
+		// storage_textures language feature" / "textureStore: no matching call
+		// ... read_write" and 33 more on "'textureSample' must only be called
+		// from uniform control flow". Whether the runtime (Dawn/browser)
+		// supports each feature is a separate, runtime-side check; the cook
+		// should emit the WGSL and let per-feature gating happen there.
+		ReadOpts.allow_non_uniform_derivatives = true;
+		ReadOpts.allowed_features = tint::wgsl::AllowedFeatures::Everything();
 		auto IrResult = tint::spirv::reader::ReadIR(Spirv, ReadOpts);
 		if (IrResult != tint::Success)
 		{
@@ -104,6 +116,7 @@ namespace
 		}
 
 		tint::wgsl::writer::Options WriteOpts = {};
+		WriteOpts.allowed_features = tint::wgsl::AllowedFeatures::Everything();
 		auto WgslResult = tint::wgsl::writer::WgslFromIR(IrResult.Get(), WriteOpts);
 		if (WgslResult != tint::Success)
 		{
@@ -554,6 +567,90 @@ namespace
 	}
 }
 
+
+namespace
+{
+	// WGSL has no inf/nan literals; tint hard-ICEs on non-finite constants
+	// (scalar.h TINT_ASSERT(std::isfinite(v.value)) -- 642 banners across the
+	// first full UT cook; UE shaders really do use inf, e.g. POSITIVE_INFINITY
+	// clears and FLT_MAX-vs-inf depth sentinels). Legalize at the SPIR-V word
+	// level before tint: rewrite every 32-bit-float OpConstant whose literal is
+	// +/-Inf to +/-FLT_MAX and NaN to 0. This is the same clamp other
+	// production backends apply when the target language cannot express
+	// non-finite literals.
+	// tint cannot express SPIR-V's EarlyFragmentTests execution mode in WGSL
+	// (parser.cc:1619 ICE, 178 banners in the first full UT cook -- DXC emits
+	// it for HLSL [earlydepthstencil]). Dropping it only loses an early-Z
+	// optimization hint; rendering semantics are unchanged. Rebuilds the word
+	// stream without the offending OpExecutionMode instructions.
+	void StripEarlyFragmentTests(std::vector<uint32_t>& Spirv)
+	{
+		if (Spirv.size() < 5) return;
+		const uint32_t OpExecutionModeOp = 16;
+		const uint32_t EarlyFragmentTestsMode = 9;
+		std::vector<uint32_t> Out;
+		Out.reserve(Spirv.size());
+		Out.insert(Out.end(), Spirv.begin(), Spirv.begin() + 5);
+		size_t i = 5;
+		while (i < Spirv.size())
+		{
+			const uint32_t Word0 = Spirv[i];
+			const uint32_t Opcode = Word0 & 0xFFFFu;
+			const uint32_t WordCount = Word0 >> 16;
+			if (WordCount == 0 || i + WordCount > Spirv.size()) { Out.insert(Out.end(), Spirv.begin() + i, Spirv.end()); break; }
+			const bool bDrop = (Opcode == OpExecutionModeOp && WordCount >= 3 && Spirv[i + 2] == EarlyFragmentTestsMode);
+			if (!bDrop)
+			{
+				Out.insert(Out.end(), Spirv.begin() + i, Spirv.begin() + i + WordCount);
+			}
+			i += WordCount;
+		}
+		Spirv = std::move(Out);
+	}
+
+	void LegalizeNonFiniteConstants(std::vector<uint32_t>& Spirv)
+	{
+		if (Spirv.size() < 5) return;
+		const uint32_t OpTypeFloatOp = 22;
+		const uint32_t OpConstantOp = 43;
+		std::unordered_map<uint32_t, bool> Float32Types;
+		size_t i = 5; // skip header
+		while (i < Spirv.size())
+		{
+			const uint32_t Word0 = Spirv[i];
+			const uint32_t Opcode = Word0 & 0xFFFFu;
+			const uint32_t WordCount = Word0 >> 16;
+			if (WordCount == 0 || i + WordCount > Spirv.size()) break;
+			if (Opcode == OpTypeFloatOp && WordCount >= 3)
+			{
+				Float32Types[Spirv[i + 1]] = (Spirv[i + 2] == 32);
+			}
+			else if (Opcode == OpConstantOp && WordCount == 4)
+			{
+				auto It = Float32Types.find(Spirv[i + 1]);
+				if (It != Float32Types.end() && It->second)
+				{
+					const uint32_t Bits = Spirv[i + 3];
+					const uint32_t Exp = (Bits >> 23) & 0xFFu;
+					const uint32_t Mant = Bits & 0x7FFFFFu;
+					if (Exp == 0xFFu)
+					{
+						if (Mant == 0) // +/-Inf -> +/-FLT_MAX
+						{
+							Spirv[i + 3] = (Bits & 0x80000000u) | 0x7F7FFFFFu;
+						}
+						else // NaN -> 0
+						{
+							Spirv[i + 3] = 0u;
+						}
+					}
+				}
+			}
+			i += WordCount;
+		}
+	}
+}
+
 static FDawnTintCookResult DawnLegalizeAndCookImpl(const unsigned int* SpirvWords, unsigned int SpirvWordCount)
 {
 	FDawnTintCookResult Out = {};
@@ -600,6 +697,9 @@ static FDawnTintCookResult DawnLegalizeAndCookImpl(const unsigned int* SpirvWord
 		Out.Diagnostic = DupToMalloc(Msg, Out.DiagnosticLen);
 		return Out;
 	}
+
+	LegalizeNonFiniteConstants(Spirv);
+	StripEarlyFragmentTests(Spirv);
 
 	std::string Wgsl, TintError;
 	if (!SpirvToWgsl(Spirv, Wgsl, TintError))
