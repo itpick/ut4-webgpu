@@ -24,6 +24,14 @@ public class DawnRHITest : ModuleRules
 		// does for Vulkan/D3D/etc.).
 		DynamicallyLoadedModuleNames.Add("DawnRHI");
 
+		// Milestone step 3: the real-cooked-shader render path needs to see
+		// FDawnVertexShader/FDawnPixelShader/FDawnShaderBinding (DawnResources.h)
+		// directly, to hand each shader its real reflected bindings (see
+		// DawnCookProbeMain.cpp's bindings sidecar / RunDawnRHIRealShaderTest
+		// below) — header-only, no link (matches DynamicallyLoadedModuleNames
+		// above; DawnRHI's actual code is still only ever loaded at runtime).
+		PrivateIncludePathModuleNames.Add("DawnRHI");
+
 		// Stage 2 shader-cook-path probe: Epic's own standard (open,
 		// non-SimplyStream) ThirdParty HLSL->SPIR-V compiler, already
 		// vendored under Engine/Source/ThirdParty/ShaderConductor with a

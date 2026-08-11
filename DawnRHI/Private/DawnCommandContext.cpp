@@ -185,6 +185,7 @@ void FDawnCommandContext::RHISetStaticUniformBuffer(FUniformBufferStaticSlot Slo
 	checkNoEntry();
 }
 
+#if WITH_RHI_BREADCRUMBS
 void FDawnCommandContext::RHIBeginBreadcrumbGPU(FRHIBreadcrumbNode* Breadcrumb)
 {
 	checkNoEntry();
@@ -194,6 +195,7 @@ void FDawnCommandContext::RHIEndBreadcrumbGPU(FRHIBreadcrumbNode* Breadcrumb)
 {
 	checkNoEntry();
 }
+#endif
 
 void FDawnCommandContext::RHISetMultipleViewports(uint32 Count, const FViewportBounds* Data)
 {

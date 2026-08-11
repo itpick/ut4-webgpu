@@ -47,6 +47,32 @@ public:
 	virtual bool GetInitializer(FVertexDeclarationElementList& Init) override { Init = Elements; return true; }
 };
 
+// Milestone step 1: a shader's real reflected resource bindings, as read
+// off the actual cooked SPIR-V/WGSL by DawnShaderCompiler.cpp/
+// tools/dawn_tint_bridge.cpp's ReflectBindings (see DawnShaderCompiler.cpp's
+// ParameterMap population) — replaces the old fixed
+// {UB@0,Texture@1,Sampler@2} @group(0) assumption. Populated directly on
+// FDawnVertexShader/FDawnPixelShader by whatever creates them from a real
+// cook (today: DawnRHITestMain's real-shader render path, reading the
+// sidecar reflection DawnCookProbe writes; tomorrow: a real engine
+// shader-map loader reading Output.ParameterMap back out). Empty is
+// legitimate for a shader that binds no resources.
+enum class EDawnShaderBindingKind : uint8
+{
+	Unknown = 0,
+	UniformBuffer = 1,
+	Texture = 2,
+	Sampler = 3,
+};
+
+struct FDawnShaderBinding
+{
+	uint32 Group = 0;
+	uint32 Binding = 0;
+	EDawnShaderBindingKind Kind = EDawnShaderBindingKind::Unknown;
+	FString Name;
+};
+
 // Stage 1 shader contract (OUR OWN, not SimplyStream's): FRHICreateShaderDesc::Code
 // is raw UTF-8 WGSL *source text* for a single entry point. The fixed entry
 // point names below ("vs_main" / "fs_main") are this module's convention.
@@ -57,7 +83,22 @@ class FDawnVertexShader : public FRHIVertexShader
 public:
 	FString WGSLSource;
 	WGPUShaderModule ShaderModule = nullptr;
-	static constexpr const TCHAR* EntryPoint = TEXT("vs_main");
+
+	// Milestone step 1/2: real WGSL entry points keep their real name (e.g.
+	// "ScreenPassVS" from a real cooked UE shader), not the Stage 1
+	// hand-authored convention below -- see ParseWgslEntryPoint() in
+	// DawnDynamicRHI.cpp, which sets this from the actual cooked WGSL text
+	// (@vertex fn <Name>) at RHICreateVertexShader time. Defaults to the old
+	// fixed name so the still-supported Stage 1/2 hand-authored WGSL test
+	// paths (whose shaders really are named vs_main) need no changes.
+	FString EntryPoint = TEXT("vs_main");
+
+	// Milestone step 1: real reflected bindings (see FDawnShaderBinding above).
+	// Empty for the Stage 1/2 hand-authored WGSL paths (those already agree
+	// with the old fixed group(0){0,1,2} layout by construction); populated
+	// for real-cooked shaders so RHICreateGraphicsPipelineState can build a
+	// reflection-driven BindGroupLayout instead of assuming fixed slots.
+	TArray<FDawnShaderBinding> Bindings;
 };
 
 class FDawnPixelShader : public FRHIPixelShader
@@ -65,7 +106,9 @@ class FDawnPixelShader : public FRHIPixelShader
 public:
 	FString WGSLSource;
 	WGPUShaderModule ShaderModule = nullptr;
-	static constexpr const TCHAR* EntryPoint = TEXT("fs_main");
+	FString EntryPoint = TEXT("fs_main"); // see FDawnVertexShader::EntryPoint above
+
+	TArray<FDawnShaderBinding> Bindings;
 };
 
 class FDawnGraphicsPipelineState : public FRHIGraphicsPipelineState

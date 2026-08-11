@@ -31,9 +31,45 @@
 // flags UBT uses for the rest of the module.
 #pragma once
 
+// Explicit default visibility for the two real ABI entry points below —
+// needed because the .so is built with -fvisibility=hidden (deliberately,
+// to keep Tint/SPIRV-Tools/libc++ symbols this TU pulls in OFF the dynamic
+// symbol table — see dawn_tint_bridge.h's top-of-file comment and
+// tools/build_dawn_tint_thirdparty.sh's sibling bridge-.so build step).
+// Without this, -fvisibility=hidden hides these two functions too and
+// dlsym("Dawn_LegalizeAndCookSpirvToWgsl"/"Dawn_FreeTintCookResult") fails.
+#if defined(__GNUC__) || defined(__clang__)
+#define DAWN_TINT_BRIDGE_API __attribute__((visibility("default")))
+#else
+#define DAWN_TINT_BRIDGE_API
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+// Real (not hardcoded/guessed) resource-kind classification for a single
+// reflected SPIR-V binding — milestone step 1 ("wire real SPIR-V
+// reflection... replacing any hardcoded @group(0){0,1,2}"). Derived by
+// walking the real SPIR-V module's OpVariable (StorageClass) ->
+// OpTypePointer -> pointee-type chain (OpTypeStruct+Block == uniform
+// buffer, OpTypeImage == texture, OpTypeSampler == sampler) — see
+// ClassifyBindings() in dawn_tint_bridge.cpp.
+typedef enum EDawnReflectedBindingKind
+{
+	DawnBindingKind_Unknown = 0,
+	DawnBindingKind_UniformBuffer = 1,
+	DawnBindingKind_Texture = 2,
+	DawnBindingKind_Sampler = 3,
+} EDawnReflectedBindingKind;
+
+typedef struct FDawnReflectedBinding
+{
+	unsigned int Set;
+	unsigned int Binding;
+	unsigned int Kind; // EDawnReflectedBindingKind
+	char Name[128];    // real SPIR-V OpName text, truncated; always NUL-terminated
+} FDawnReflectedBinding;
 
 typedef struct FDawnTintCookResult
 {
@@ -48,6 +84,14 @@ typedef struct FDawnTintCookResult
 	// UTF-8 diagnostic text.
 	char* Diagnostic;
 	unsigned int DiagnosticLen;
+
+	// On success: malloc'd array of NumBindings real reflected resource
+	// bindings (see FDawnReflectedBinding above) — every @group/@binding
+	// the cooked WGSL actually declares, with its real classified resource
+	// kind. Empty (Bindings==NULL, NumBindings==0) is legitimate for a
+	// shader that binds no resources (e.g. NullPixelShader.usf).
+	FDawnReflectedBinding* Bindings;
+	unsigned int NumBindings;
 } FDawnTintCookResult;
 
 // Full pipeline stage 2+3: legalized-SPIR-V-eligible input (still has
@@ -55,12 +99,15 @@ typedef struct FDawnTintCookResult
 // strips them itself via spvtools::CreateStripReflectInfoPass(), matching
 // tools/hlsl_to_wgsl.cpp's LegalizeAndStrip+SpirvToWgsl steps) -> WGSL text
 // + a human-readable resource-binding reflection summary (set/binding/name
-// triples, read off the pre-legalization SPIR-V's OpName/OpDecorate).
+// triples, read off the pre-legalization SPIR-V's OpName/OpDecorate) + a
+// real structured binding manifest (FDawnReflectedBinding[]) for programmatic
+// consumption (milestone step 1 — DawnShaderCompiler.cpp/DawnRHI use this,
+// not the text summary, to build reflection-driven bind group layouts).
 // Frees any previously-returned result's buffers are the CALLER's
 // responsibility via Dawn_FreeTintCookResult.
-FDawnTintCookResult Dawn_LegalizeAndCookSpirvToWgsl(const unsigned int* SpirvWords, unsigned int SpirvWordCount);
+DAWN_TINT_BRIDGE_API FDawnTintCookResult Dawn_LegalizeAndCookSpirvToWgsl(const unsigned int* SpirvWords, unsigned int SpirvWordCount);
 
-void Dawn_FreeTintCookResult(FDawnTintCookResult* Result);
+DAWN_TINT_BRIDGE_API void Dawn_FreeTintCookResult(FDawnTintCookResult* Result);
 
 #ifdef __cplusplus
 }

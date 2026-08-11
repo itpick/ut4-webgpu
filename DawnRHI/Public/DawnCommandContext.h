@@ -32,8 +32,17 @@ public:
 	virtual void RHISetShaderParameters(FRHIComputeShader* ComputeShader, TConstArrayView<uint8> InParametersData, TConstArrayView<FRHIShaderParameter> InParameters, TConstArrayView<FRHIShaderParameterResource> InResourceParameters, TConstArrayView<FRHIShaderParameterResource> InBindlessParameters) override;
 	virtual void RHISetStaticUniformBuffers(const FUniformBufferStaticBindings& InUniformBuffers) override;
 	virtual void RHISetStaticUniformBuffer(FUniformBufferStaticSlot Slot, FRHIUniformBuffer* UniformBuffer) override;
+#if WITH_RHI_BREADCRUMBS
+	// Pre-existing latent bug fixed incidentally this session: RHIContext.h
+	// only declares these two pure virtuals when WITH_RHI_BREADCRUMBS is set
+	// (off in a Shipping build without WITH_PROFILEGPU/HAS_GPU_STATS — see
+	// RHIBreadcrumbs.h) but this override list was unconditional, so
+	// FRHIBreadcrumbNode (only visible when RHIBreadcrumbs.h's guarded
+	// content is compiled in) went undeclared and DawnRHI failed to compile
+	// in Shipping. Match the base class's own guard exactly.
 	virtual void RHIBeginBreadcrumbGPU(FRHIBreadcrumbNode* Breadcrumb) override;
 	virtual void RHIEndBreadcrumbGPU(FRHIBreadcrumbNode* Breadcrumb) override;
+#endif
 	virtual void RHISetMultipleViewports(uint32 Count, const FViewportBounds* Data) override;
 	virtual void RHIBeginRenderQuery(FRHIRenderQuery* RenderQuery) override;
 	virtual void RHIEndRenderQuery(FRHIRenderQuery* RenderQuery) override;

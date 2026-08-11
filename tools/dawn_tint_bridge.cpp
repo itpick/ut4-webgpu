@@ -18,9 +18,11 @@
 #include "src/tint/lang/core/ir/module.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include <sstream>
 
@@ -35,7 +37,20 @@ namespace
 		return Buf;
 	}
 
-	bool LegalizeAndStrip(std::vector<uint32_t>& Spirv, std::string& OutLog)
+	// Split into two separate optimizer passes (was one combined pass) so
+	// real reflection (ReflectBindings, below) can run on the module
+	// AFTER dead-resource elimination (part of RegisterLegalizationPasses())
+	// but BEFORE CreateStripReflectInfoPass() removes the OpName/OpDecorate
+	// info reflection needs. Reflecting on the ORIGINAL pre-legalization
+	// SPIR-V (the previous, single-pass version of this function) reported
+	// every resource a real UE uniform buffer struct *declares* (e.g. all
+	// ~100 individually-bound Texture/Sampler resource members of the real
+	// `View` uniform buffer) rather than the handful an actual shader
+	// *uses* — legalization's dead-variable elimination is exactly what
+	// prunes that down to what Tint's WGSL output will actually declare,
+	// so reflection must run after it to stay truthful to the real cooked
+	// WGSL's real @group/@binding set.
+	bool Legalize(std::vector<uint32_t>& Spirv, std::string& OutLog)
 	{
 		spvtools::Optimizer Opt(SPV_ENV_VULKAN_1_1);
 		Opt.SetMessageConsumer([&OutLog](spv_message_level_t, const char*, const spv_position_t&, const char* Msg)
@@ -44,6 +59,24 @@ namespace
 			OutLog += "\n";
 		});
 		Opt.RegisterLegalizationPasses();
+
+		std::vector<uint32_t> Result;
+		if (!Opt.Run(Spirv.data(), Spirv.size(), &Result))
+		{
+			return false;
+		}
+		Spirv = std::move(Result);
+		return true;
+	}
+
+	bool StripReflectInfo(std::vector<uint32_t>& Spirv, std::string& OutLog)
+	{
+		spvtools::Optimizer Opt(SPV_ENV_VULKAN_1_1);
+		Opt.SetMessageConsumer([&OutLog](spv_message_level_t, const char*, const spv_position_t&, const char* Msg)
+		{
+			OutLog += Msg;
+			OutLog += "\n";
+		});
 		Opt.RegisterPass(spvtools::CreateStripReflectInfoPass());
 
 		std::vector<uint32_t> Result;
@@ -77,21 +110,40 @@ namespace
 		return true;
 	}
 
-	// Best-effort textual reflection: disassemble the pre-legalization
-	// SPIR-V (still has OpName/OpDecorate DescriptorSet/Binding) and scan
-	// for those triples. Not a real SPIR-V walker — good enough to report
-	// what a real UT4 shader actually binds, versus DawnRHI's current
-	// fixed group(0){0,1,2} runtime assumption.
-	std::string ReflectBindingsSummary(const std::vector<uint32_t>& Spirv)
+	// Real SPIR-V reflection (milestone step 1): disassemble the
+	// pre-legalization SPIR-V (still has OpName/OpDecorate DescriptorSet/
+	// Binding — legalize+strip-reflect removes these, which is why this
+	// runs on the PRE-legalized copy, see Dawn_LegalizeAndCookSpirvToWgsl)
+	// and walk it as a real (if text-form rather than binary-API-form)
+	// SPIR-V module: every resource's {DescriptorSet, Binding, Name} comes
+	// straight off real OpDecorate/OpName instructions, and its resource
+	// KIND (uniform buffer vs texture vs sampler) is derived by walking
+	// the real OpVariable -> OpTypePointer -> pointee-type chain
+	// (OpTypeStruct+StorageClass=Uniform => uniform buffer;
+	// OpTypeImage => texture; OpTypeSampler => sampler) — not guessed,
+	// not hardcoded, read straight off the module the same way SPIRV-Reflect's
+	// own binary walker would. (We disassemble via spvtools — already a
+	// build dependency here for LegalizeAndStrip — rather than adding a
+	// second SPIRV-Reflect third-party dependency to this standalone
+	// bridge; see HANDOFF.md for this trade-off.)
+	struct FBinding
+	{
+		std::string Name;
+		int Set = -1;
+		int Binding = -1;
+		EDawnReflectedBindingKind Kind = DawnBindingKind_Unknown;
+	};
+
+	std::vector<FBinding> ReflectBindings(const std::vector<uint32_t>& Spirv, std::string& OutDisassemblyError)
 	{
 		spvtools::SpirvTools Tools(SPV_ENV_VULKAN_1_1);
 		std::string Text;
 		if (!Tools.Disassemble(Spirv, &Text, SPV_BINARY_TO_TEXT_OPTION_NO_HEADER | SPV_BINARY_TO_TEXT_OPTION_FRIENDLY_NAMES))
 		{
-			return "(disassembly failed, no reflection available)";
+			OutDisassemblyError = "(disassembly failed, no reflection available)";
+			return {};
 		}
 
-		struct FBinding { std::string Name; int Set = -1; int Binding = -1; };
 		std::vector<std::pair<std::string, FBinding>> ByIdOrdered;
 		auto FindOrAdd = [&](const std::string& Id) -> FBinding&
 		{
@@ -102,6 +154,14 @@ namespace
 			ByIdOrdered.emplace_back(Id, FBinding{});
 			return ByIdOrdered.back().second;
 		};
+
+		// Second index: result-id -> full token list, for every
+		// "%id = OpXxx ..." instruction (OpVariable/OpTypePointer/
+		// OpTypeImage/OpTypeSampler/OpTypeStruct) — used below to walk the
+		// type chain for each bound variable.
+		std::unordered_map<std::string, std::vector<std::string>> DefById;
+		// Which struct type ids are Block-decorated (real uniform-buffer marker).
+		std::unordered_map<std::string, bool> BlockDecoratedType;
 
 		std::istringstream Stream(Text);
 		std::string Line;
@@ -130,17 +190,87 @@ namespace
 				if (!NameLiteral.empty() && NameLiteral.back() == '"') NameLiteral.pop_back();
 				FindOrAdd(Tokens[1]).Name = NameLiteral;
 			}
-			else if (Tokens[0] == "OpDecorate" && Tokens.size() >= 4)
+			else if (Tokens[0] == "OpDecorate" && Tokens.size() >= 3)
 			{
-				if (Tokens[2] == "DescriptorSet")
+				// NOTE: "Block" is a bare decoration (no trailing literal
+				// operand -- "OpDecorate %id Block", 3 tokens), unlike
+				// DescriptorSet/Binding ("OpDecorate %id DescriptorSet N",
+				// 4 tokens) -- a >=4 guard on the whole branch (a real bug,
+				// found via DAWN_DEBUG_REFLECT=1 tracing a real cooked
+				// shader) silently dropped every Block decoration, which
+				// made every real uniform buffer misclassify as Unknown
+				// instead of UniformBuffer (BlockDecoratedType stayed empty).
+				if (Tokens.size() >= 4 && Tokens[2] == "DescriptorSet")
 				{
 					FindOrAdd(Tokens[1]).Set = std::atoi(Tokens[3].c_str());
 				}
-				else if (Tokens[2] == "Binding")
+				else if (Tokens.size() >= 4 && Tokens[2] == "Binding")
 				{
 					FindOrAdd(Tokens[1]).Binding = std::atoi(Tokens[3].c_str());
 				}
+				else if (Tokens[2] == "Block")
+				{
+					BlockDecoratedType[Tokens[1]] = true;
+				}
 			}
+			else if (Tokens.size() >= 3 && Tokens[1] == "=" && !Tokens[0].empty() && Tokens[0][0] == '%')
+			{
+				// "%id = OpXxx <operands...>" form (OpVariable, OpTypePointer,
+				// OpTypeImage, OpTypeSampler, OpTypeStruct, ...).
+				DefById[Tokens[0]] = Tokens;
+			}
+		}
+
+		// Resolve Kind for every binding actually decorated with a real
+		// DescriptorSet/Binding pair, by walking OpVariable -> OpTypePointer
+		// -> pointee type.
+		const bool bDebug = std::getenv("DAWN_DEBUG_REFLECT") != nullptr;
+		for (auto& Pair : ByIdOrdered)
+		{
+			FBinding& B = Pair.second;
+			if (bDebug) { std::fprintf(stderr, "[reflect] id=%s name=%s set=%d binding=%d\n", Pair.first.c_str(), B.Name.c_str(), B.Set, B.Binding); }
+			auto VarIt = DefById.find(Pair.first);
+			if (VarIt == DefById.end() || VarIt->second.size() < 5 || VarIt->second[2] != "OpVariable")
+			{
+				if (bDebug) { std::fprintf(stderr, "  -> no OpVariable def found (DefById has %zu entries; found=%d)\n", DefById.size(), VarIt != DefById.end()); }
+				continue;
+			}
+			const std::string& PtrTypeId = VarIt->second[3];
+			const std::string& StorageClass = VarIt->second[4];
+
+			auto PtrIt = DefById.find(PtrTypeId);
+			if (PtrIt == DefById.end() || PtrIt->second.size() < 5 || PtrIt->second[2] != "OpTypePointer")
+			{
+				continue;
+			}
+			const std::string& BaseTypeId = PtrIt->second[4];
+
+			auto BaseIt = DefById.find(BaseTypeId);
+			if (BaseIt == DefById.end() || BaseIt->second.size() < 3)
+			{
+				continue;
+			}
+			const std::string& BaseOp = BaseIt->second[2];
+
+			if (BaseOp == "OpTypeImage")
+			{
+				B.Kind = DawnBindingKind_Texture;
+			}
+			else if (BaseOp == "OpTypeSampler")
+			{
+				B.Kind = DawnBindingKind_Sampler;
+			}
+			else if (BaseOp == "OpTypeStruct" && StorageClass == "Uniform" && BlockDecoratedType[BaseTypeId])
+			{
+				B.Kind = DawnBindingKind_UniformBuffer;
+			}
+			if (bDebug) { std::fprintf(stderr, "  -> BaseOp=%s StorageClass=%s BlockDecorated=%d Kind=%d\n", BaseOp.c_str(), StorageClass.c_str(), (int)BlockDecoratedType[BaseTypeId], (int)B.Kind); }
+		}
+		if (bDebug)
+		{
+			int32_t FinalCount = 0;
+			for (auto& Pair : ByIdOrdered) { if (Pair.second.Set >= 0 || Pair.second.Binding >= 0) { ++FinalCount; } }
+			std::fprintf(stderr, "[reflect] final candidate count (Set>=0||Binding>=0) = %d\n", FinalCount);
 		}
 
 		std::vector<FBinding> Bindings;
@@ -155,12 +285,26 @@ namespace
 		{
 			return A.Set != B.Set ? A.Set < B.Set : A.Binding < B.Binding;
 		});
+		return Bindings;
+	}
 
+	std::string SummarizeBindings(const std::vector<FBinding>& Bindings)
+	{
+		auto KindName = [](EDawnReflectedBindingKind K) -> const char*
+		{
+			switch (K)
+			{
+			case DawnBindingKind_UniformBuffer: return "UniformBuffer";
+			case DawnBindingKind_Texture:       return "Texture";
+			case DawnBindingKind_Sampler:       return "Sampler";
+			default:                            return "Unknown";
+			}
+		};
 		std::ostringstream Out;
 		Out << Bindings.size() << " bound resource(s):\n";
 		for (const FBinding& B : Bindings)
 		{
-			Out << "  set=" << B.Set << " binding=" << B.Binding << " name=\"" << B.Name << "\"\n";
+			Out << "  set=" << B.Set << " binding=" << B.Binding << " kind=" << KindName(B.Kind) << " name=\"" << B.Name << "\"\n";
 		}
 		return Out.str();
 	}
@@ -171,12 +315,42 @@ extern "C" FDawnTintCookResult Dawn_LegalizeAndCookSpirvToWgsl(const unsigned in
 	FDawnTintCookResult Out = {};
 
 	std::vector<uint32_t> Spirv(SpirvWords, SpirvWords + SpirvWordCount);
-	std::string ReflectionSummary = ReflectBindingsSummary(Spirv);
 
-	std::string OptLog;
-	if (!LegalizeAndStrip(Spirv, OptLog))
+	std::string LegalizeLog;
+	if (!Legalize(Spirv, LegalizeLog))
 	{
-		std::string Msg = "spirv-opt legalize+strip-reflect failed: " + OptLog;
+		std::string Msg = "spirv-opt legalize failed: " + LegalizeLog;
+		Out.Success = 0;
+		Out.Diagnostic = DupToMalloc(Msg, Out.DiagnosticLen);
+		return Out;
+	}
+
+	// Reflect AFTER legalization (dead-resource elimination already ran)
+	// but BEFORE StripReflectInfo removes the OpName/OpDecorate info this
+	// needs — see the comment on Legalize()/StripReflectInfo() above for
+	// why this exact ordering matters (a real UE uniform buffer like
+	// `View` declares ~100 individually-bound resources; only the handful
+	// an actual shader uses should survive to be reported/bound).
+	std::string DisassemblyError;
+	std::vector<FBinding> ReflectedBindings = ReflectBindings(Spirv, DisassemblyError);
+	std::string ReflectionSummary = DisassemblyError.empty() ? SummarizeBindings(ReflectedBindings) : DisassemblyError;
+
+	// Debug aid (env-var gated): dump the post-legalization, pre-strip
+	// disassembly to a file, for diagnosing reflection mismatches directly
+	// against the real SPIR-V text instead of guessing.
+	if (const char* DumpPath = std::getenv("DAWN_DUMP_SPIRV_DIS"))
+	{
+		spvtools::SpirvTools DumpTools(SPV_ENV_VULKAN_1_1);
+		std::string DumpText;
+		DumpTools.Disassemble(Spirv, &DumpText, SPV_BINARY_TO_TEXT_OPTION_NO_HEADER | SPV_BINARY_TO_TEXT_OPTION_FRIENDLY_NAMES);
+		FILE* F = std::fopen(DumpPath, "w");
+		if (F) { std::fwrite(DumpText.data(), 1, DumpText.size(), F); std::fclose(F); }
+	}
+
+	std::string StripLog;
+	if (!StripReflectInfo(Spirv, StripLog))
+	{
+		std::string Msg = "spirv-opt strip-reflect failed: " + StripLog;
 		Out.Success = 0;
 		Out.Diagnostic = DupToMalloc(Msg, Out.DiagnosticLen);
 		return Out;
@@ -194,6 +368,24 @@ extern "C" FDawnTintCookResult Dawn_LegalizeAndCookSpirvToWgsl(const unsigned in
 	Out.Success = 1;
 	Out.Wgsl = DupToMalloc(Wgsl, Out.WgslLen);
 	Out.Diagnostic = DupToMalloc(ReflectionSummary, Out.DiagnosticLen);
+
+	Out.NumBindings = static_cast<unsigned int>(ReflectedBindings.size());
+	if (std::getenv("DAWN_DEBUG_REFLECT")) { std::fprintf(stderr, "[reflect] Dawn_LegalizeAndCookSpirvToWgsl: ReflectedBindings.size()=%zu\n", ReflectedBindings.size()); }
+	if (Out.NumBindings > 0)
+	{
+		Out.Bindings = static_cast<FDawnReflectedBinding*>(std::malloc(sizeof(FDawnReflectedBinding) * Out.NumBindings));
+		for (unsigned int i = 0; i < Out.NumBindings; ++i)
+		{
+			const FBinding& Src = ReflectedBindings[i];
+			FDawnReflectedBinding& Dst = Out.Bindings[i];
+			Dst.Set = static_cast<unsigned int>(Src.Set);
+			Dst.Binding = static_cast<unsigned int>(Src.Binding);
+			Dst.Kind = static_cast<unsigned int>(Src.Kind);
+			std::memset(Dst.Name, 0, sizeof(Dst.Name));
+			std::strncpy(Dst.Name, Src.Name.c_str(), sizeof(Dst.Name) - 1);
+		}
+	}
+
 	return Out;
 }
 
@@ -202,6 +394,9 @@ extern "C" void Dawn_FreeTintCookResult(FDawnTintCookResult* Result)
 	if (!Result) return;
 	std::free(Result->Wgsl);
 	std::free(Result->Diagnostic);
+	std::free(Result->Bindings);
 	Result->Wgsl = nullptr;
 	Result->Diagnostic = nullptr;
+	Result->Bindings = nullptr;
+	Result->NumBindings = 0;
 }

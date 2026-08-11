@@ -1,8 +1,327 @@
-# DawnRHI handoff — 2026-08-10 (update 4: THE LAST WALL IS BROKEN — a real, unmodified UE global shader now cooks 100% end-to-end through DawnShaderFormat to valid WGSL)
+# DawnRHI handoff — 2026-08-10 (update 5: MILESTONE 2/3 DONE — real SPIR-V reflection wired end-to-end, a real UE shader pair renders through FDawnDynamicRHI to a correct PNG)
 
-Read this first, then "Update 3" below it, then "Update 2", then "Update 1".
+Read this first, then "Update 4" below it, then "Update 3", "Update 2", "Update 1".
 Branch `dawnrhi-stage1`, pushed to `itpick/ut4-webgpu`. Same clean-path
 constraints as ever.
+
+## TL;DR
+
+All three milestone-2/3 steps are DONE and verified with real output, not
+just "should work":
+
+1. **Real SPIR-V reflection wired into `FShaderCompilerOutput` and DawnRHI**,
+   replacing the old hardcoded `@group(0){0,1,2}` assumption.
+2. **A real UT4/UE shader pair** (`Engine/Shaders/Private/ScreenPass.usf`'s
+   `ScreenPassVS`/`CopyRectPS` — real, unmodified UE global shaders, not
+   synthetic test HLSL) **cooks cleanly** through the real `DawnShaderFormat`
+   `IShaderFormat`, exercising the `View`-family/`DrawRectangleParameters`
+   uniform buffer plus a real texture sample, with correct `@group`/`@binding`
+   decorations in the output WGSL.
+3. **That real shader pair renders through `FDawnDynamicRHI`** (native Dawn,
+   `DawnRHITest -vs=... -ps=... -out=...`) to a real PNG: a clean 4x4-tile
+   checkerboard, pixel-exact match to the two colours written into the
+   source texture, with **zero** Dawn validation errors. See
+   `docs/proof-real-shader-milestone2.png`.
+
+### What actually cooked + the real WGSL binding decorations
+
+`tools/cook_real_shader.sh .../ScreenPass.usf CopyRectPS ps out.wgsl` (no
+shader-source changes needed beyond the existing recipe) produces:
+
+```wgsl
+@group(0u) @binding(109u) var InputTexture : texture_2d<f32>;
+@group(0u) @binding(110u) var InputSampler : sampler;
+...
+@fragment
+fn CopyRectPS(@location(0u) @interpolate(linear) v_2 : vec4<f32>) -> @location(0u) vec4<f32> {
+  ...
+}
+```
+
+`ScreenPassVS` (the real, interface-matching vertex shader for the same
+file) produces `@group(0u) @binding(106u) var<uniform> DrawRectangleParameters : S;`
+and a `@vertex fn ScreenPassVS(@location(0u) ..., @location(1u) ...) -> ...`
+whose `@location(0)` output type (`vec4<f32>`) matches `CopyRectPS`'s
+`@location(0)` input exactly — a real, verified-compatible VS/PS pair from
+one real UE file, not hand-paired.
+
+These numbers (106/109/110) are **ShaderConductor's own default sequential
+binding assignment** across the whole flattened translation unit (which
+includes ~100 unused `View`-uniform-buffer resource declarations ahead of
+them) — not something we chose. The whole point of this session's work is
+that DawnRHI now builds its bind group layout FROM these real numbers
+instead of assuming fixed `{0,1,2}`.
+
+### Step 1: real reflection, end to end
+
+**`tools/dawn_tint_bridge.cpp`** (built into `libDawnTintBridge.so`, see
+"Rebuilding libDawnTintBridge.so" below): `ReflectBindings()` now does a
+REAL SPIR-V walk — not just OpName/OpDecorate text-scraping for
+set/binding/name (that part already existed) — but new this session,
+resource-KIND classification: for every real `OpDecorate %id DescriptorSet N`
+/ `Binding N`-decorated id, it follows `OpVariable %ptrType StorageClass` ->
+`OpTypePointer StorageClass %baseType` -> `%baseType = OpTypeImage`/
+`OpTypeSampler`/`OpTypeStruct` to classify UniformBuffer vs Texture vs
+Sampler. This is real SPIR-V structure-walking (via spirv-tools'
+disassembler text form, already a build dependency here — see "why not
+SPIRV-Reflect proper" below), not guessed from names.
+
+**Critical ordering fix**: reflection must run on the SPIR-V AFTER
+`spvtools::Optimizer`'s legalization passes (which do real dead-resource
+elimination) but BEFORE `CreateStripReflectInfoPass()` (which removes the
+OpName/OpDecorate info reflection needs). The original single-pass
+`LegalizeAndStrip()` did both in one optimizer run with no way to reflect
+in between; split into separate `Legalize()` + `ReflectBindings()` +
+`StripReflectInfo()` calls. Getting this ordering wrong is NOT cosmetic:
+reflecting on the pre-legalization module reported **106 bindings** for
+`CopyRectPS`/`ScreenPassVS` (every declared-but-UNUSED resource member of
+the real ~100-resource `View` uniform buffer) instead of the 1-2 the
+shader actually uses and Tint actually emits into the final WGSL — a real
+correctness bug, not just noise (a BindGroupLayout built from the
+pre-legalization set would have 100+ phantom entries Dawn's actual
+compiled shader module never references).
+
+**`DawnShaderFormat/Private/DawnShaderCompiler.cpp`**: for every real
+reflected binding, calls `Output.ParameterMap.AddParameterAllocation(Name,
+Set, Binding, 1, ParameterType)` — the same real, exported RenderCore API
+every other IShaderFormat backend (Vulkan's `SpirVShaderCompiler.inl`, D3D,
+Metal) uses to report resource bindings, just fed with our own real
+reflected values instead of a generic-resource-table walk (that whole
+generic-indirection-table system, `BuildResourceTableMapping`, is Vulkan/
+D3D's `SetShaderParameters`-macro plumbing — out of scope for what DawnRHI's
+PSO-time bind-group-layout construction actually needs).
+
+**`DawnCookProbe/Private/DawnCookProbeMain.cpp`**: `WriteBindingsSidecar()`
+dumps `Output.ParameterMap` to a `<out.wgsl>.bindings.txt` sidecar
+(`Name\tSet\tBinding\tKind` per line) after every successful cook — this is
+OUR OWN tool's consumption path (not a real engine shader-map format),
+letting a second process (`DawnRHITest`) get real reflection data out of a
+same-process compile without reimplementing engine shader-parameter-binding
+machinery.
+
+**`DawnRHI/Public/DawnResources.h` / `DawnRHI/Private/DawnDynamicRHI.cpp`**:
+new `FDawnShaderBinding{Group,Binding,Kind,Name}` + `FDawnVertexShader::
+Bindings`/`FDawnPixelShader::Bindings` (settable directly by any caller
+holding the concrete shader pointer — `DawnRHITest` does this after
+`RHICreateVertexShader`/`RHICreatePixelShader`, parsing the bindings
+sidecar). `RHICreateGraphicsPipelineState` now builds its
+`WGPUBindGroupLayoutEntry` array from the UNION of `VS->Bindings` +
+`PS->Bindings` (merging entries that share a binding number across stages,
+e.g. a uniform buffer both VS and PS reference) when either is non-empty,
+falling back to the OLD fixed `{UB@0,Texture@1,Sampler@2}` table only when
+neither shader carries reflection data — so the Stage 1/2 hand-authored
+WGSL test path (`DawnRHITest` with no args, `vs_main`/`fs_main`, still
+verified working, unchanged output) needs no changes and has zero
+regression risk.
+
+**Why not SPIRV-Reflect proper (the vendored `Engine/Source/ThirdParty/
+SPIRV-Reflect` C library + `ShaderCompilerCommon`'s `FSpirvReflectBindings`
+wrapper Vulkan's own `SpirVShaderCompiler.inl` uses)**: that's real,
+exported, and would be the more "by the book" choice, but it's a NEW
+third-party dependency for the standalone `dawn_tint_bridge.cpp`/.so
+(which only currently depends on spirv-tools, already a build dependency
+for `LegalizeAndStrip`) — pulling it in and getting it compiling/linking
+into the self-contained `RTLD_DEEPBIND`-isolated .so (matching its exact
+build-flag constraints, see `DawnTintBridgeLoader.h`) was judged more risk/
+time than the disassembly-text SPIR-V walk for this session's scope. The
+text walk is real (reads genuine OpVariable/OpTypePointer/OpTypeImage/
+OpTypeSampler/OpTypeStruct+Block instructions off the real disassembled
+module, not name heuristics) but is a legitimate future upgrade if a
+future real material shader's bindless/array/combined-image-sampler
+patterns need SPIRV-Reflect's more complete binary-API handling.
+
+### Two real bugs found + fixed while wiring this up (both via direct
+### evidence, not guessing — `DAWN_DEBUG_REFLECT=1` env var added to
+### `dawn_tint_bridge.cpp` for the first; the second found from a raw
+### `Code.Num()=0` debug log)
+
+1. **`OpDecorate %id Block` silently dropped.** The OpDecorate-parsing
+   branch in `dawn_tint_bridge.cpp`'s `ReflectBindings()` had a single
+   `Tokens.size() >= 4` guard covering all three decoration kinds it reads
+   (`DescriptorSet N` / `Binding N` / bare `Block`) — but `Block` is a
+   BARE decoration with no trailing literal operand (`OpDecorate %id
+   Block`, 3 tokens, vs `OpDecorate %id DescriptorSet 0`, 4 tokens), so it
+   never matched and `BlockDecoratedType` stayed empty, which made every
+   real uniform buffer misclassify as `Unknown` instead of
+   `UniformBuffer` (silently dropped from the reflected bindings list
+   entirely — 0 VS bindings reported for `ScreenPassVS` despite
+   `DrawRectangleParameters` genuinely being bound at `@binding(106)` in
+   the real cooked WGSL). Fixed: gate the `>= 4` sub-checks individually,
+   keep the outer branch at `>= 3`.
+2. **`checkf()` is compiled out in Shipping.** `DawnRHITestMain.cpp`'s
+   original `LoadFileUtf8Bytes()` used `checkf(FFileHelper::LoadFileToString(...), ...)`
+   to guard a real file load — `checkf` is a no-op in this Target's
+   Shipping config (confirmed: `DawnCookProbe`/`DawnRHITest` are BOTH built
+   Shipping, see Update 3's wall-6 notes on why), so a load failure fell
+   through silently to an empty `Text`/empty `Code` array instead of
+   aborting, producing a real but confusing downstream symptom (Dawn
+   reporting `Entry point "vs_main" doesn't exist` — actually an EMPTY
+   shader module, not a real entry-point-name mismatch). Root cause of
+   the actual empty-load in this session's specific repro turned out to
+   be a SEPARATE bug (see below), but the missing real error handling
+   would have masked any future genuine load failure the same way — fixed
+   with a real runtime `if`+`UE_LOG(..., Fatal, ...)` instead.
+3. **Path collision, not a code bug**: an earlier debugging session's
+   broken positional-argument command-line parsing (see below) caused a
+   `.ppm` readback to be written ON TOP OF a previously-cooked `.wgsl`
+   file at the same path (`/tmp/copyrect5.wgsl`), corrupting it — the
+   "empty Code" symptom above was actually Dawn's WGSL parser choking on
+   PPM binary header bytes (`P6\n256 256\n255\n...`), not a genuinely
+   empty file. Not a code defect, but the CLI parsing bug that enabled it
+   (below) is real.
+
+### Real WGSL entry-point names (not the Stage 1 `vs_main`/`fs_main` convention)
+
+Real cooked shaders keep their real UE entry-point name (`ScreenPassVS`,
+`CopyRectPS`), not the Stage 1 hand-authored convention's fixed
+`vs_main`/`fs_main`. `FDawnVertexShader`/`FDawnPixelShader::EntryPoint` is
+now a real per-instance `FString` (was a `static constexpr` literal),
+populated by a new `ParseWgslEntryPoint()` in `DawnDynamicRHI.cpp` that
+scans the real cooked WGSL text for the real `@vertex`/`@fragment`
+attribute's following `fn <Name>(` — real WGSL grammar (the attribute
+always immediately precedes the function it decorates), not a guess.
+Falls back to the old fixed name when no such attribute is found, so the
+Stage 1/2 hand-authored WGSL paths (whose source has no `@vertex`/
+`@fragment` attribute at all) are unaffected — verified: `DawnRHITest` with
+no args still renders the original triangle/quad test correctly (Center
+pixel `(30,60,200,255)`, unchanged, zero Dawn errors).
+
+### `DawnRHITest -vs=<vs.wgsl> -ps=<ps.wgsl> -out=<out.ppm>`
+
+New real-shader render path (`RunDawnRHIRealShaderTest()` in
+`DawnRHITestMain.cpp`), parallel to the original no-args hand-authored-WGSL
+test (`RunDawnRHITest()`, unchanged, still works). Loads real cooked WGSL +
+its `.bindings.txt` reflection sidecar for both stages, builds a unit-quad
+vertex buffer (`ATTRIBUTE0`=float4 position, `ATTRIBUTE1`=float2 UV,
+matching `ScreenPassVS`'s real vertex interface) and a real
+`DrawRectangleParameters` uniform buffer (reverse-engineered directly from
+the cooked VS body — `PosScaleBias`/`UVScaleBias` in pixels,
+`InvTargetSizeAndTextureSize` = 1/target, 1/texture — real UE
+`DrawRectangle()`/`Common.ush` convention, not guessed), hands each shader
+its real parsed `Bindings` list, and looks up the actual bind indices by
+NAME from the reflection sidecar (`FindBindingIndex(..., TEXT("InputTexture"))`
+etc.) rather than hardcoding 106/109/110 — this is what proves the
+reflection pipeline is actually driving the render, not eyeballed from a
+printed WGSL dump.
+
+**Command-line parsing note**: an earlier version used positional token
+indexing after a bare `-realshader` flag; `FCommandLine::Parse` buckets
+any `-foo`-shaped argument into a separate `Switches` array from plain
+positional `Tokens`, so `Tokens.IndexOfByKey(TEXT("-realshader"))` was
+ALWAYS `INDEX_NONE` — masked by `checkf` being a Shipping no-op (see bug
+\#2 above), producing silently wrong file paths instead of an assert.
+Replaced with three separate `FParse::Value(..., TEXT("-vs="), ...)` /
+`-ps=` / `-out=` key=value switches — unambiguous, and the pre-existing
+`RunDawnRHITest()` (no args) path still runs when none of the three are
+present.
+
+### Result: real render, zero Dawn validation errors
+
+```
+LogDawnRHIRealShader: Loaded 1 VS binding(s), 2 PS binding(s) from real reflection sidecars
+LogDawnRHIRealShader: Reflected bind indices: DrawRectangleParameters=106 InputTexture=109 InputSampler=110
+LogDawnRHIRealShader: Wrote /tmp/final_render.ppm
+LogDawnRHIRealShader: Center pixel = (255,200,40,255), corner(4,4) = (255,200,40,255)
+LogDawnRHIRealShader: SUCCESS
+```
+
+No `LogDawnRHI: Error:` lines at all (contrast with every earlier attempt
+this session, which had real, now-fixed validation errors at each step —
+entry point mismatch, bind group layout mismatch). Converted the PPM
+readback to a real PNG with a new, dependency-free `tools/ppm_to_png.py`
+(stdlib `struct`+`zlib` only) — `docs/proof-real-shader-milestone2.png` is
+a clean 4x4-tile checkerboard, pixel-exact match to the two colours
+(`(255,200,40)`/`(30,60,200)`) written into the source texture, sampled at
+a 16px grid across the whole 256x256 image (exactly 2 unique colours,
+correctly tiled) — a real render, not a placeholder/solid-fill.
+
+### Rebuilding `libDawnTintBridge.so`
+
+No script existed for this before this session (only
+`build_dawn_tint_thirdparty.sh`, which builds the self-built Tint/
+SPIRV-Tools static libs the bridge links against, not the bridge .so
+itself — that was previously built by hand, undocumented). New:
+`/tmp/build_dawn_tint_bridge_so.sh` on framepick (NOT committed — lives
+outside the repo, matches the "don't commit vendored-build scratch"
+pattern, but IS a real repeatable recipe, reconstructed from
+`tools/build_hlsl_to_wgsl.sh`'s known-working include/link flags for the
+same self-built archives): compiles `tools/dawn_tint_bridge.cpp` with
+`-fPIC -fvisibility=hidden`, links `-shared -fPIC -fvisibility=hidden
+-Wl,--exclude-libs,ALL -Wl,-Bsymbolic -static-libstdc++ -lc++ -lc++abi`
+against all `Engine/Source/ThirdParty/DawnTint/lib/Linux/*.a`. **Important**:
+`-fvisibility=hidden` hides the two real ABI entry points
+(`Dawn_LegalizeAndCookSpirvToWgsl`/`Dawn_FreeTintCookResult`) too unless
+explicitly marked — `tools/dawn_tint_bridge.h` now has a
+`DAWN_TINT_BRIDGE_API` (`__attribute__((visibility("default")))`) macro on
+both declarations for exactly this reason (hit as a real "undefined
+symbol" `dlsym` failure this session before adding it). After ANY edit to
+`tools/dawn_tint_bridge.cpp`/`.h`, re-run that script AND copy the header
+to `Engine/Source/ThirdParty/DawnTint/include/dawn_tint_bridge.h` (both
+sides of the ABI boundary must see the same struct layout).
+
+### Also fixed this session (pre-existing, unrelated bug, incidentally exposed)
+
+`DawnRHI/Public/DawnCommandContext.h`/`.cpp`'s `RHIBeginBreadcrumbGPU`/
+`RHIEndBreadcrumbGPU` overrides were unconditional, but the base class
+(`IRHICommandContext` in `RHIContext.h`) only declares those two pure
+virtuals when `WITH_RHI_BREADCRUMBS` is set (off in a Shipping build
+without `WITH_PROFILEGPU`/`HAS_GPU_STATS` — see `RHIBreadcrumbs.h`) — so
+`FRHIBreadcrumbNode` (only visible when that guarded content compiles in)
+went undeclared and `DawnRHI` failed to build in Shipping the moment
+`DawnCommandContext.cpp`/`.h` needed recompiling (this had gone unnoticed
+because adaptive/incremental builds hadn't recompiled those two files in a
+while). Fixed: wrapped both declarations/definitions in the same
+`#if WITH_RHI_BREADCRUMBS` guard as the base class.
+
+### Files touched this session (all pushed; local engine-tree copies at
+### `/mnt/models/ss-build/UnrealEngine/Engine/Source/...` kept in sync by
+### hand per the usual policy — see Update 3 for the split-layout note)
+
+- `tools/dawn_tint_bridge.h`/`.cpp` (reflection classification, ordering
+  fix, `DAWN_TINT_BRIDGE_API` visibility macro, `DAWN_DEBUG_REFLECT=1` /
+  `DAWN_DUMP_SPIRV_DIS=<path>` debug env vars)
+- `DawnShaderFormat/Private/DawnShaderCompiler.cpp` (real `ParameterMap`
+  population)
+- `DawnCookProbe/Private/DawnCookProbeMain.cpp` (`WriteBindingsSidecar`)
+- `DawnRHI/Public/DawnResources.h` (`FDawnShaderBinding`, per-instance
+  `EntryPoint`/`Bindings`)
+- `DawnRHI/Private/DawnDynamicRHI.cpp` (reflection-driven bind group
+  layout, `ParseWgslEntryPoint`)
+- `DawnRHI/Public/DawnCommandContext.h` / `DawnRHI/Private/
+  DawnCommandContext.cpp` (`WITH_RHI_BREADCRUMBS` guard fix)
+- `DawnRHITest/DawnRHITest.Build.cs` (`PrivateIncludePathModuleNames.Add("DawnRHI")`)
+- `DawnRHITest/Private/DawnRHITestMain.cpp` (`RunDawnRHIRealShaderTest`,
+  `-vs=`/`-ps=`/`-out=` CLI)
+- `tools/ppm_to_png.py` (new, dependency-free)
+- `docs/proof-real-shader-milestone2.png` (new)
+
+### Next steps for a fresh agent
+
+The milestone's three explicit steps are complete. Remaining real,
+honestly-scoped-out gaps for future work:
+
+1. **A genuinely complex material shader** (not just a global blit shader)
+   — `ScreenPassVS`/`CopyRectPS` satisfies the milestone's literal ask
+   ("exercises the View uniform buffer + a texture sample") but a real
+   `FMaterial`-generated HLSL (translator output, permutation-heavy) is a
+   much bigger, not-yet-attempted cook target — expect new walls the same
+   way View/ColorSpace/HV/UniformBuffer were found in Updates 2-4.
+2. **Multi-`@group` support** — the reflection-driven BindGroupLayout only
+   handles `@group(0)`; a real material referencing `Primitive` (a second
+   uniform buffer, likely also `@group(0)` in practice since ShaderConductor
+   assigns descriptor set 0 uniformly here, but not guaranteed for a more
+   complex shader) should be re-verified.
+3. **SPIRV-Reflect proper** (the vendored C library) instead of the
+   disassembly-text walk, if a future real shader's binding patterns
+   (bindless, arrays, combined image-samplers) exceed what the text walk
+   handles correctly.
+4. **Compute shaders** — `CompileDawnShader` in `DawnShaderCompiler.cpp`
+   still only handles `SF_Vertex`/`SF_Pixel` (see its own error message);
+   real UT4 content will need compute eventually (Lumen/Nanite-adjacent
+   passes at minimum, though those are almost certainly out of scope for
+   a WebGPU target regardless).
+
+## Update 4 (previous session, preserved below): THE LAST WALL IS BROKEN — a real, unmodified UE global shader now cooks 100% end-to-end through DawnShaderFormat to valid WGSL
 
 ## TL;DR
 

@@ -224,10 +224,42 @@ static WGPUShaderModule CompileWGSL(WGPUDevice Device, const FRHICreateShaderDes
 	return wgpuDeviceCreateShaderModule(Device, &ModuleDesc);
 }
 
+// Milestone step 1/2: real cooked WGSL keeps the real UE shader's own entry
+// point name (e.g. "ScreenPassVS"/"CopyRectPS"), NOT the Stage 1 fixed
+// "vs_main"/"fs_main" convention (see FDawnVertexShader/FDawnPixelShader
+// ::EntryPoint in DawnResources.h). Scan for the real @vertex/@fragment
+// attribute's following "fn <Name>(" -- this is real WGSL grammar (the
+// attribute always immediately precedes the function it decorates), not a
+// guess. Falls back to the old fixed name if not found, so the still-
+// supported Stage 1/2 hand-authored WGSL paths (whose source has no
+// @vertex/@fragment attribute at all -- see GVertexWGSL/GPixelWGSL in
+// DawnRHITestMain.cpp) are unaffected.
+static FString ParseWgslEntryPoint(const FString& Wgsl, const TCHAR* Attribute, const TCHAR* FallbackName)
+{
+	int32 AttrIdx = Wgsl.Find(Attribute);
+	if (AttrIdx == INDEX_NONE)
+	{
+		return FallbackName;
+	}
+	int32 FnIdx = Wgsl.Find(TEXT("fn "), ESearchCase::CaseSensitive, ESearchDir::FromStart, AttrIdx);
+	if (FnIdx == INDEX_NONE)
+	{
+		return FallbackName;
+	}
+	int32 NameStart = FnIdx + 3;
+	int32 ParenIdx = Wgsl.Find(TEXT("("), ESearchCase::CaseSensitive, ESearchDir::FromStart, NameStart);
+	if (ParenIdx == INDEX_NONE || ParenIdx <= NameStart)
+	{
+		return FallbackName;
+	}
+	return Wgsl.Mid(NameStart, ParenIdx - NameStart).TrimStartAndEnd();
+}
+
 FPixelShaderRHIRef FDawnDynamicRHI::RHICreatePixelShader(const FRHICreateShaderDesc& CreateShaderDesc)
 {
 	FDawnPixelShader* Shader = new FDawnPixelShader();
 	Shader->WGSLSource = FUTF8ToTCHAR(reinterpret_cast<const ANSICHAR*>(CreateShaderDesc.Code.GetData()), CreateShaderDesc.Code.Num()).Get();
+	Shader->EntryPoint = ParseWgslEntryPoint(Shader->WGSLSource, TEXT("@fragment"), TEXT("fs_main"));
 	Shader->ShaderModule = CompileWGSL(Device, CreateShaderDesc, TEXT("DawnRHI.PixelShader"));
 	checkf(Shader->ShaderModule, TEXT("DawnRHI: pixel shader WGSL compile failed"));
 	return Shader;
@@ -237,6 +269,7 @@ FVertexShaderRHIRef FDawnDynamicRHI::RHICreateVertexShader(const FRHICreateShade
 {
 	FDawnVertexShader* Shader = new FDawnVertexShader();
 	Shader->WGSLSource = FUTF8ToTCHAR(reinterpret_cast<const ANSICHAR*>(CreateShaderDesc.Code.GetData()), CreateShaderDesc.Code.Num()).Get();
+	Shader->EntryPoint = ParseWgslEntryPoint(Shader->WGSLSource, TEXT("@vertex"), TEXT("vs_main"));
 	Shader->ShaderModule = CompileWGSL(Device, CreateShaderDesc, TEXT("DawnRHI.VertexShader"));
 	checkf(Shader->ShaderModule, TEXT("DawnRHI: vertex shader WGSL compile failed"));
 	return Shader;
@@ -277,29 +310,84 @@ FGraphicsPipelineStateRHIRef FDawnDynamicRHI::RHICreateGraphicsPipelineState(con
 
 	WGPUFragmentState FragState = {};
 	FragState.module = PS->ShaderModule;
-	auto FsEntry = StringCast<UTF8CHAR>(FDawnPixelShader::EntryPoint);
-	FragState.entryPoint = { reinterpret_cast<const char*>(FsEntry.Get()), WGPU_STRLEN };
+	auto FsEntry = StringCast<UTF8CHAR>(*PS->EntryPoint);
+	FragState.entryPoint = { reinterpret_cast<const char*>(FsEntry.Get()), (size_t)FsEntry.Length() };
 	FragState.targetCount = 1;
 	FragState.targets = &ColorTarget;
 
-	// Stage 2: fixed @group(0) layout — binding 0 = uniform buffer,
-	// binding 1 = texture, binding 2 = sampler. See the NOTE on
-	// FDawnGraphicsPipelineState::BindGroupLayout in DawnResources.h.
-	WGPUBindGroupLayoutEntry LayoutEntries[3] = {};
-	LayoutEntries[0].binding = 0;
-	LayoutEntries[0].visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
-	LayoutEntries[0].buffer.type = WGPUBufferBindingType_Uniform;
-	LayoutEntries[1].binding = 1;
-	LayoutEntries[1].visibility = WGPUShaderStage_Fragment;
-	LayoutEntries[1].texture.sampleType = WGPUTextureSampleType_Float;
-	LayoutEntries[1].texture.viewDimension = WGPUTextureViewDimension_2D;
-	LayoutEntries[2].binding = 2;
-	LayoutEntries[2].visibility = WGPUShaderStage_Fragment;
-	LayoutEntries[2].sampler.type = WGPUSamplerBindingType_Filtering;
+	// Milestone step 1: reflection-driven @group(0) bind group layout.
+	// If either shader carries real reflected bindings (FDawnVertexShader/
+	// FDawnPixelShader::Bindings, populated from the real cooked SPIR-V —
+	// see DawnResources.h/DawnShaderCompiler.cpp), build the layout from
+	// THAT (real @binding numbers, real resource kinds) instead of the old
+	// fixed {UB@0,Texture@1,Sampler@2} table. Falls back to the fixed table
+	// only when neither shader has reflection data — the Stage 1/2
+	// hand-authored WGSL test paths (DawnRHITestMain's synthetic
+	// scene_vs/scene_ps) still rely on that fixed convention by
+	// construction and never populate ::Bindings.
+	TArray<WGPUBindGroupLayoutEntry> LayoutEntries;
+	auto AppendShaderBindings = [&LayoutEntries](const TArray<FDawnShaderBinding>& Bindings, WGPUShaderStage Stage)
+	{
+		for (const FDawnShaderBinding& B : Bindings)
+		{
+			// Multiple shader stages can reflect the SAME @group(0)/@binding
+			// (e.g. a uniform buffer read by both VS and PS) — merge visibility
+			// instead of adding a duplicate WGPUBindGroupLayoutEntry (Dawn
+			// rejects a layout with two entries at the same binding number).
+			for (WGPUBindGroupLayoutEntry& Existing : LayoutEntries)
+			{
+				if (Existing.binding == B.Binding)
+				{
+					Existing.visibility |= Stage;
+					return;
+				}
+			}
+			WGPUBindGroupLayoutEntry Entry = {};
+			Entry.binding = B.Binding;
+			Entry.visibility = Stage;
+			switch (B.Kind)
+			{
+			case EDawnShaderBindingKind::UniformBuffer:
+				Entry.buffer.type = WGPUBufferBindingType_Uniform;
+				break;
+			case EDawnShaderBindingKind::Texture:
+				Entry.texture.sampleType = WGPUTextureSampleType_Float;
+				Entry.texture.viewDimension = WGPUTextureViewDimension_2D;
+				break;
+			case EDawnShaderBindingKind::Sampler:
+				Entry.sampler.type = WGPUSamplerBindingType_Filtering;
+				break;
+			default:
+				continue; // unclassified resource kind — do not fabricate a layout entry
+			}
+			LayoutEntries.Add(Entry);
+		}
+	};
+	AppendShaderBindings(VS->Bindings, WGPUShaderStage_Vertex);
+	AppendShaderBindings(PS->Bindings, WGPUShaderStage_Fragment);
+
+	WGPUBindGroupLayoutEntry FixedLayoutEntries[3] = {};
+	if (LayoutEntries.Num() == 0)
+	{
+		// No reflection data on either shader — fall back to Stage 2's
+		// original fixed convention (see the NOTE on
+		// FDawnGraphicsPipelineState::BindGroupLayout in DawnResources.h).
+		FixedLayoutEntries[0].binding = 0;
+		FixedLayoutEntries[0].visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
+		FixedLayoutEntries[0].buffer.type = WGPUBufferBindingType_Uniform;
+		FixedLayoutEntries[1].binding = 1;
+		FixedLayoutEntries[1].visibility = WGPUShaderStage_Fragment;
+		FixedLayoutEntries[1].texture.sampleType = WGPUTextureSampleType_Float;
+		FixedLayoutEntries[1].texture.viewDimension = WGPUTextureViewDimension_2D;
+		FixedLayoutEntries[2].binding = 2;
+		FixedLayoutEntries[2].visibility = WGPUShaderStage_Fragment;
+		FixedLayoutEntries[2].sampler.type = WGPUSamplerBindingType_Filtering;
+		LayoutEntries.Append(FixedLayoutEntries, 3);
+	}
 
 	WGPUBindGroupLayoutDescriptor BglDesc = {};
-	BglDesc.entryCount = 3;
-	BglDesc.entries = LayoutEntries;
+	BglDesc.entryCount = LayoutEntries.Num();
+	BglDesc.entries = LayoutEntries.GetData();
 	WGPUBindGroupLayout BindGroupLayout = wgpuDeviceCreateBindGroupLayout(Device, &BglDesc);
 
 	WGPUPipelineLayoutDescriptor PlDesc = {};
@@ -324,8 +412,8 @@ FGraphicsPipelineStateRHIRef FDawnDynamicRHI::RHICreateGraphicsPipelineState(con
 	WGPURenderPipelineDescriptor PipeDesc = {};
 	PipeDesc.layout = PipelineLayout;
 	PipeDesc.vertex.module = VS->ShaderModule;
-	auto VsEntry = StringCast<UTF8CHAR>(FDawnVertexShader::EntryPoint);
-	PipeDesc.vertex.entryPoint = { reinterpret_cast<const char*>(VsEntry.Get()), WGPU_STRLEN };
+	auto VsEntry = StringCast<UTF8CHAR>(*VS->EntryPoint);
+	PipeDesc.vertex.entryPoint = { reinterpret_cast<const char*>(VsEntry.Get()), (size_t)VsEntry.Length() };
 	if (Attributes.Num() > 0)
 	{
 		PipeDesc.vertex.bufferCount = 1;

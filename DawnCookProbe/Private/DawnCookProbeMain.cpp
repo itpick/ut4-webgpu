@@ -46,6 +46,35 @@ IMPLEMENT_APPLICATION(DawnCookProbe, "DawnCookProbe");
 
 DEFINE_LOG_CATEGORY_STATIC(LogDawnCookProbe, Log, All);
 
+// Milestone step 1/3 glue: dump the real reflected bindings DawnShaderCompiler.cpp
+// just populated into Output.ParameterMap (see that file — real {set,binding,kind}
+// triples read off the actual cooked SPIR-V, not hardcoded) as a small sidecar
+// text file next to the .wgsl output. This is OUR OWN tool's consumption path
+// (DawnRHITestMain reads this file to build a reflection-driven BindGroupLayout
+// — see FDawnVertexShader/FDawnPixelShader::Bindings in DawnResources.h) — not
+// a real engine shader-map format, just the simplest real, non-lossy way to get
+// genuine reflection data from this same-process compile out to a second binary.
+static void WriteBindingsSidecar(const FShaderCompilerOutput& Output, const FString& WgslOutPath)
+{
+	const FString SidecarPath = WgslOutPath + TEXT(".bindings.txt");
+	TArray<FString> Lines;
+	for (const auto& Pair : Output.ParameterMap.GetParameterMap())
+	{
+		const FParameterAllocation& Alloc = Pair.Value;
+		const TCHAR* KindStr = TEXT("Unknown");
+		switch (Alloc.Type)
+		{
+		case EShaderParameterType::UniformBuffer: KindStr = TEXT("UniformBuffer"); break;
+		case EShaderParameterType::SRV:           KindStr = TEXT("Texture"); break;
+		case EShaderParameterType::Sampler:       KindStr = TEXT("Sampler"); break;
+		default: break;
+		}
+		Lines.Add(FString::Printf(TEXT("%s\t%u\t%u\t%s"), *Pair.Key, (uint32)Alloc.BufferIndex, (uint32)Alloc.BaseIndex, KindStr));
+	}
+	FFileHelper::SaveStringArrayToFile(Lines, *SidecarPath);
+	UE_LOG(LogDawnCookProbe, Log, TEXT("Wrote %d reflected binding(s) to %s"), Lines.Num(), *SidecarPath);
+}
+
 int32 GuardedMain(int32 ArgC, TCHAR* ArgV[])
 {
 	// -dumpubdecl mode: dump the REAL, UE-auto-generated HLSL declaration
@@ -238,6 +267,7 @@ int32 GuardedMain(int32 ArgC, TCHAR* ArgV[])
 		FUTF8ToTCHAR Converter(reinterpret_cast<const ANSICHAR*>(Code.GetData()), Code.Num());
 		FString Wgsl = FString::ConstructFromPtrSize(Converter.Get(), Converter.Length());
 		FFileHelper::SaveStringToFile(Wgsl, *OutPath);
+		WriteBindingsSidecar(Output, OutPath);
 
 		UE_LOG(LogDawnCookProbe, Log, TEXT("SUCCESS (%.1f ms). %d bytes WGSL written to %s"), ElapsedMs, Code.Num(), *OutPath);
 		return 0;
@@ -361,6 +391,7 @@ int32 GuardedMain(int32 ArgC, TCHAR* ArgV[])
 	FUTF8ToTCHAR Converter(reinterpret_cast<const ANSICHAR*>(Code.GetData()), Code.Num());
 	FString Wgsl = FString::ConstructFromPtrSize(Converter.Get(), Converter.Length());
 	FFileHelper::SaveStringToFile(Wgsl, *OutPath);
+	WriteBindingsSidecar(Output, OutPath);
 
 	UE_LOG(LogDawnCookProbe, Log, TEXT("SUCCESS (%.1f ms). %d bytes WGSL written to %s"), ElapsedMs, Code.Num(), *OutPath);
 	return 0;

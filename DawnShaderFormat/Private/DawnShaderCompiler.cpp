@@ -120,12 +120,43 @@ void CompileDawnShader(
 
 	const FString ReflectionSummary = Utf8BufToFString(BridgeResult.Diagnostic, BridgeResult.DiagnosticLen);
 
+	// Milestone step 1: populate FShaderCompilerOutput::ParameterMap with the
+	// REAL reflected bindings the Tint bridge just read off the actual
+	// SPIR-V module (see tools/dawn_tint_bridge.cpp's ReflectBindings) —
+	// same real, exported RenderCore API every other IShaderFormat backend
+	// (Vulkan's SpirVShaderCompiler.inl, D3D, Metal) uses to report its real
+	// resource bindings, populated with real {set,binding} numbers instead
+	// of this module's old hardcoded @group(0){0,1,2} assumption. BufferIndex
+	// carries the real WGSL @group number, BaseIndex the real @binding
+	// number — this is exactly what DawnRHI needs to build a reflection-driven
+	// bind group layout instead of trusting a fixed 3-slot table (see
+	// DawnResources.h/DawnDynamicRHI.cpp's FDawnVertexShader/FDawnPixelShader
+	// ::Bindings, populated from this same reflected data by DawnCookProbeMain.cpp
+	// / any future real shader-map consumer).
+	for (uint32 i = 0; i < BridgeResult.NumBindings; ++i)
+	{
+		const FDawnReflectedBinding& B = BridgeResult.Bindings[i];
+		if (B.Name[0] == '\0')
+		{
+			continue; // unnamed/unreflected — nothing a ParameterMap lookup could ever ask for by name
+		}
+		EShaderParameterType ParamType;
+		switch (static_cast<EDawnReflectedBindingKind>(B.Kind))
+		{
+		case DawnBindingKind_UniformBuffer: ParamType = EShaderParameterType::UniformBuffer; break;
+		case DawnBindingKind_Texture:       ParamType = EShaderParameterType::SRV; break;
+		case DawnBindingKind_Sampler:       ParamType = EShaderParameterType::Sampler; break;
+		default: continue; // unclassified resource kind — do not fabricate a type
+		}
+		Output.ParameterMap.AddParameterAllocation(ANSI_TO_TCHAR(B.Name), (uint16)B.Set, (uint16)B.Binding, 1, ParamType);
+	}
+
 	Output.Target = Input.Target;
 	Output.bSucceeded = true;
 	Output.GenerateOutputHash();
 
-	UE_LOG(LogShaders, Display, TEXT("DawnShaderFormat: cooked %s|%s -> %u bytes WGSL. %s"),
-		*Input.VirtualSourceFilePath, *Input.EntryPointName, BridgeResult.WgslLen, *ReflectionSummary);
+	UE_LOG(LogShaders, Display, TEXT("DawnShaderFormat: cooked %s|%s -> %u bytes WGSL, %u reflected binding(s). %s"),
+		*Input.VirtualSourceFilePath, *Input.EntryPointName, BridgeResult.WgslLen, BridgeResult.NumBindings, *ReflectionSummary);
 
 	TintLoader.FreeResult(&BridgeResult);
 }
