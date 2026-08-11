@@ -2366,3 +2366,10 @@ Booted via `host/ut-shim.html` + `host/serve.py` + `tools/cdp_capture.mjs` (new 
 1. **Give the boot a real chance:** validate on a machine with a real GPU browser, and/or raise the CDP wait well past the ~2-3 min the 673MB wasm needs to compile; consider a Development→Shipping or size-reduced build to shrink the wasm. This is the immediate blocker to *observing* PreInit in-browser — the binary is built.
 2. **Cook the menu content** for SimplyStream (entry/menu map + UI) via our WebGPUShaderFormat (Update 15) so the game has content to boot into a menu.
 3. Then drive the Slate/UMG render path through DawnRHI to the actual menu, clearing whatever wall PreInit surfaces once observable.
+
+## Update 17 — Migrated framepick -> nixtop (2026-08-11)
+Tree moved to nixtop /mnt/vms/ss-build/UnrealEngine (212GB; .git+Saved excluded). Siblings: ue-cook-shell.nix, stock-emsdk. Repo cloned to /mnt/vms/ss-build/ut4-webgpu-push.
+- framepick-built binaries load but the cook pipeline segfaults on nixtop (env-specific) -> REBUILD required, not reuse.
+- NixOS build wall: no /bin/bash -> UE BatchFiles/*.sh shebangs fail. FIX = tools/nixtop_setup.sh (rewrite shebangs to env bash + repoint tool paths /mnt/models->/mnt/vms). Build via: nix-shell ue-cook-shell.nix --run "bash Engine/Build/BatchFiles/RunUBT.sh <T> <P> <C> -NoUBA".
+- git: SSH auth to GitHub FAILS on nixtop (no key); HTTPS clone works; PUSH needs a token (set up on nixtop).
+- DawnCookProbe-Linux-Shipping rebuild UNDERWAY on nixtop (16 procs). RESUME: let it finish -> re-run tools/cook_real_shader.sh (paths now /mnt/vms) to reverify WGSL cook -> rebuild+verify DawnRHITest render -> UnrealTournamentEditor+WebGPUShaderFormat cook -> then task #76 (boot UT4 to menu) on nixtop.
