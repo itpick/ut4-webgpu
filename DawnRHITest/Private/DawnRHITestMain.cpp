@@ -204,17 +204,25 @@ float4 vs_main(float3 inPos : POSITION) : SV_Position {
 	}
 }
 
-// Milestone step 3: render a REAL cooked UE shader pair (ScreenPass.usf's
-// ScreenPassVS/CopyRectPS, cooked via tools/cook_real_shader.sh through the
-// real DawnShaderFormat IShaderFormat -- see HANDOFF.md) through FDawnDynamicRHI,
-// using the REAL reflected bindings DawnCookProbeMain.cpp wrote to each
-// shader's ".bindings.txt" sidecar (see WriteBindingsSidecar in
-// DawnCookProbeMain.cpp / Output.ParameterMap population in
-// DawnShaderCompiler.cpp) to build a reflection-driven BindGroupLayout and
-// resource-parameter list -- NOT the old fixed @group(0){0,1,2} assumption
-// (see DawnResources.h/DawnDynamicRHI.cpp's FDawnShaderBinding wiring).
+// Milestone step 3 (+ generalized this session, HANDOFF.md "Update 12"):
+// render a REAL cooked UE shader pair through FDawnDynamicRHI, cooked via
+// tools/cook_real_shader.sh through the real DawnShaderFormat IShaderFormat.
+// Originally hardcoded to exactly one pair (ScreenPass.usf's ScreenPassVS/
+// CopyRectPS); now resolves EVERY real reflected binding name from both
+// shaders' sidecars generically (see ResolveResource() inside
+// RunDawnRHIRealShaderTest below), so the same function also drives a more
+// material-representative real pair (ScreenPassVS + DistortApplyScreenPS.usf's
+// Main -- real View uniform buffer + two real texture/sampler pairs) without
+// being a second copy of this function. Uses the REAL reflected bindings
+// DawnCookProbeMain.cpp wrote to each shader's ".bindings.txt" sidecar (see
+// WriteBindingsSidecar in DawnCookProbeMain.cpp / Output.ParameterMap
+// population in DawnShaderCompiler.cpp) to build a reflection-driven,
+// real-@group-partitioned BindGroupLayout set and resource-parameter list --
+// NOT the old fixed single-@group(0){0,1,2} assumption (see
+// DawnResources.h/DawnDynamicRHI.cpp's FDawnShaderBinding wiring, and this
+// session's multi-@group fix to both files).
 //
-// Usage: DawnRHITest -realshader <vs.wgsl> <ps.wgsl> <out.png>
+// Usage: DawnRHITest -vs=<vs.wgsl> -ps=<ps.wgsl> -out=<out.ppm>
 namespace
 {
 	struct FParsedBinding
@@ -266,18 +274,12 @@ namespace
 		return Out;
 	}
 
-	uint32 FindBindingIndex(const TArray<FParsedBinding>& Parsed, const TCHAR* Name)
-	{
-		for (const FParsedBinding& P : Parsed)
-		{
-			if (P.Name == Name)
-			{
-				return P.Binding;
-			}
-		}
-		checkf(false, TEXT("DawnRHITest -realshader: reflected binding '%s' not found in sidecar"), Name);
-		return 0;
-	}
+	// NOTE: the old FindBindingIndex(Name)-by-name-lookup helper (used to
+	// hardcode exactly 3 known resource names) was replaced this session by
+	// RunDawnRHIRealShaderTest's generic ResolveResource() binding-name
+	// resolver, which walks every real reflected binding from both
+	// sidecars instead of asking for specific names — see HANDOFF.md
+	// "Update 12".
 
 	TArray<uint8> LoadFileUtf8Bytes(const FString& Path)
 	{
@@ -355,7 +357,9 @@ int RunDawnRHIRealShaderTest(const FString& VsPath, const FString& PsPath, const
 	static_cast<FDawnVertexShader*>(VertexShader.GetReference())->Bindings = ToDawnShaderBindings(VsBindings);
 	static_cast<FDawnPixelShader*>(PixelShader.GetReference())->Bindings = ToDawnShaderBindings(PsBindings);
 
-	// --- Sampler + checkerboard texture (InputTexture/InputSampler) ---
+	// --- Sampler + checkerboard texture (InputTexture / SceneColorTexture --
+	// same real "scene image" role under either name; see the generic
+	// binding-name resolver below) ---
 	FSamplerStateInitializerRHI SamplerInit(SF_Point, AM_Wrap, AM_Wrap, AM_Wrap);
 	FSamplerStateRHIRef Sampler = GDynamicRHI->RHICreateSamplerState(SamplerInit);
 
@@ -380,6 +384,65 @@ int RunDawnRHIRealShaderTest(const FString& VsPath, const FString& PsPath, const
 		Sub.WriteData(Checker.GetData(), Checker.Num());
 	}
 	FTextureRHIRef CheckerTexture = TexInit2D.Finalize();
+
+	// --- Second real texture: DistortionTexture (DistortApplyScreenPS.usf's
+	// Main -- HANDOFF.md "Update 12"). Real UE convention: R/G = positive
+	// horizontal/vertical UV offset, B/A = negative horizontal/vertical (see
+	// the shader's own header comment); DistBufferUVOffset =
+	// (AccumDist.rg - AccumDist.ba) * 0.25. A UNIFORM texel value of
+	// (200,0,0,0) is a constant, hand-computable +0.196 U-axis shift
+	// (200/255 * 0.25), deliberately large enough that it pushes the
+	// rightmost ~20% of the frame outside the real View.BufferBilinearUVMinMax
+	// [0,1] range and exercises the shader's real edge-clamp branch (falls
+	// back to the undistorted UV there) -- a single texture whose real data
+	// visibly and predictably reshapes the SceneColorTexture-sampled output,
+	// not just an inert bound-but-unused resource.
+	FRHITextureCreateDesc DistortTexDesc = FRHITextureCreateDesc::Create2D(TEXT("DistortionTexture"), 1, 1, PF_R8G8B8A8);
+	DistortTexDesc.AddFlags(ETextureCreateFlags::ShaderResource);
+	FRHITextureInitializer DistortTexInit = GDynamicRHI->RHICreateTextureInitializer(CmdList, DistortTexDesc);
+	{
+		FRHITextureSubresourceInitializer Sub = DistortTexInit.GetTexture2DSubresource(0);
+		uint8 Texel[4] = { 200, 0, 0, 0 };
+		Sub.WriteData(Texel, sizeof(Texel));
+	}
+	FTextureRHIRef DistortionTexture = DistortTexInit.Finalize();
+
+	// --- Real View uniform buffer (DistortApplyScreenPS.usf's Main reads
+	// View.BufferBilinearUVMinMax; View.BufferSizeAndInvSize is also
+	// referenced by TexToPixCoords() but dead-code-eliminated out of the
+	// real cooked WGSL for this entry point's non-MSAA path -- see the
+	// bindings sidecar / HANDOFF.md "Update 12"). Real UE's View uniform
+	// buffer is ~100 members / >6.7KB (see the highest real
+	// OpMemberDecorate ... Offset seen across this cook, 6736); rather than
+	// hand-reconstruct the whole real FViewUniformShaderParameters layout
+	// (Engine module, not linked into this small standalone program), this
+	// allocates a real-sized zeroed buffer and patches ONLY the byte
+	// offsets this specific real shader actually reads, taken directly from
+	// the real cooked SPIR-V's own OpMemberDecorate %type_View <idx> Offset
+	// decorations (captured via dawn_tint_bridge.cpp's DAWN_DUMP_SPIRV_DIS=
+	// debug hook on this exact cook -- NOT guessed/hand-packed): member 94
+	// "View_BufferSizeAndInvSize" @ byte offset 2496, member 95
+	// "View_BufferBilinearUVMinMax" @ byte offset 2512 (both real vec4s).
+	// These byte offsets are a property of the View struct's OWN fixed
+	// real member declaration order (see the real `-dumpubdecl View` HLSL),
+	// not of this particular shader, so they're valid for any real UE
+	// shader binding the same View uniform buffer through this toolchain.
+	// Every other View member stays zero -- unread by this shader (verified
+	// by DCE: View reflects to only this one entry in the sidecar).
+	const uint32 ViewUBSize = 6912; // real max reflected offset (6736) + slack, 16-byte aligned
+	TArray<uint8> ViewUBData;
+	ViewUBData.SetNumZeroed(ViewUBSize);
+	{
+		float* BufferSizeAndInvSize = reinterpret_cast<float*>(ViewUBData.GetData() + 2496);
+		BufferSizeAndInvSize[0] = 256.0f; BufferSizeAndInvSize[1] = 256.0f;
+		BufferSizeAndInvSize[2] = 1.0f / 256.0f; BufferSizeAndInvSize[3] = 1.0f / 256.0f;
+		float* BufferBilinearUVMinMax = reinterpret_cast<float*>(ViewUBData.GetData() + 2512);
+		BufferBilinearUVMinMax[0] = 0.0f; BufferBilinearUVMinMax[1] = 0.0f;
+		BufferBilinearUVMinMax[2] = 1.0f; BufferBilinearUVMinMax[3] = 1.0f;
+	}
+	FRHIUniformBufferLayoutInitializer ViewLayoutInit(TEXT("View"), ViewUBSize);
+	TRefCountPtr<FRHIUniformBufferLayout> ViewUBLayout = new FRHIUniformBufferLayout(ViewLayoutInit);
+	FUniformBufferRHIRef ViewUniformBuffer = GDynamicRHI->RHICreateUniformBuffer(ViewUBData.GetData(), ViewUBLayout, UniformBuffer_MultiFrame, EUniformBufferValidation::None);
 
 	// --- DrawRectangleParameters uniform buffer: real UE DrawRectangle()
 	// convention (Common.ush), reverse-engineered directly from the cooked
@@ -425,20 +488,47 @@ int RunDawnRHIRealShaderTest(const FString& VsPath, const FString& PsPath, const
 	Context->RHISetStreamSource(0, VertexBuffer, 0);
 	Context->RHISetViewport(0, 0, 0, (float)Width, (float)Height, 1);
 
-	// Real reflected indices (NOT hardcoded 0/1/2) -- proves the bind group
-	// this test builds is actually driven by milestone step 1's reflection
-	// data, not eyeballed from the printed WGSL.
-	const uint32 DrawRectIdx = FindBindingIndex(VsBindings, TEXT("DrawRectangleParameters"));
-	const uint32 TexIdx = FindBindingIndex(PsBindings, TEXT("InputTexture"));
-	const uint32 SampIdx = FindBindingIndex(PsBindings, TEXT("InputSampler"));
-	UE_LOG(LogDawnRHIRealShader, Log, TEXT("Reflected bind indices: DrawRectangleParameters=%u InputTexture=%u InputSampler=%u"), DrawRectIdx, TexIdx, SampIdx);
-
-	FRHIShaderParameterResource ResourceParams[3] = {
-		FRHIShaderParameterResource(UniformBuffer.GetReference(), (uint16)DrawRectIdx),
-		FRHIShaderParameterResource(CheckerTexture.GetReference(), (uint16)TexIdx),
-		FRHIShaderParameterResource(Sampler.GetReference(), (uint16)SampIdx),
+	// Generic real-binding-name resolver (NOT hardcoded 0/1/2, and NOT a
+	// fixed 3-resource list any more -- HANDOFF.md "Update 12"): every real
+	// name the reflection sidecars report across BOTH shader stages gets
+	// resolved to one of this test's real RHI resources by name, so this
+	// same function drives both the milestone-2 shader pair
+	// (DrawRectangleParameters/InputTexture/InputSampler) and a more
+	// material-representative real pair (+View/SceneColorTexture*/
+	// DistortionTexture*) without a second copy of this function. Any
+	// UniformBuffer resource NOT one of the two this test knows how to
+	// build (DrawRectangleParameters, View) is a real, honestly-reported
+	// gap -- see the fatal below -- not silently skipped.
+	auto ResolveResource = [&](const FString& Name, uint32 Binding) -> TOptional<FRHIShaderParameterResource>
+	{
+		if (Name == TEXT("DrawRectangleParameters")) { return FRHIShaderParameterResource(UniformBuffer.GetReference(), (uint16)Binding); }
+		if (Name == TEXT("View"))                    { return FRHIShaderParameterResource(ViewUniformBuffer.GetReference(), (uint16)Binding); }
+		if (Name == TEXT("InputTexture") || Name == TEXT("SceneColorTexture"))          { return FRHIShaderParameterResource(CheckerTexture.GetReference(), (uint16)Binding); }
+		if (Name == TEXT("InputSampler") || Name == TEXT("SceneColorTextureSampler"))   { return FRHIShaderParameterResource(Sampler.GetReference(), (uint16)Binding); }
+		if (Name == TEXT("DistortionTexture"))        { return FRHIShaderParameterResource(DistortionTexture.GetReference(), (uint16)Binding); }
+		if (Name == TEXT("DistortionTextureSampler")) { return FRHIShaderParameterResource(Sampler.GetReference(), (uint16)Binding); }
+		return TOptional<FRHIShaderParameterResource>();
 	};
-	Context->RHISetShaderParameters(PixelShader.GetReference(), TConstArrayView<uint8>(), TConstArrayView<FRHIShaderParameter>(), TConstArrayView<FRHIShaderParameterResource>(ResourceParams, 3), TConstArrayView<FRHIShaderParameterResource>());
+
+	TArray<FRHIShaderParameterResource> ResourceParams;
+	FString IndexLog;
+	for (const TArray<FParsedBinding>* Bindings : { &VsBindings, &PsBindings })
+	{
+		for (const FParsedBinding& B : *Bindings)
+		{
+			if (B.Kind != TEXT("Texture") && B.Kind != TEXT("Sampler") && B.Kind != TEXT("UniformBuffer"))
+			{
+				continue; // reflected-but-unclassified (see dawn_tint_bridge.cpp) -- nothing to bind
+			}
+			TOptional<FRHIShaderParameterResource> Resolved = ResolveResource(B.Name, B.Binding);
+			checkf(Resolved.IsSet(), TEXT("DawnRHITest -realshader: real reflected binding '%s' (@binding(%u)) has no known test resource to bind -- add one to ResolveResource() rather than silently skipping it"), *B.Name, B.Binding);
+			ResourceParams.Add(Resolved.GetValue());
+			IndexLog += FString::Printf(TEXT(" %s=%u"), *B.Name, B.Binding);
+		}
+	}
+	UE_LOG(LogDawnRHIRealShader, Log, TEXT("Reflected bind indices:%s"), *IndexLog);
+
+	Context->RHISetShaderParameters(PixelShader.GetReference(), TConstArrayView<uint8>(), TConstArrayView<FRHIShaderParameter>(), TConstArrayView<FRHIShaderParameterResource>(ResourceParams), TConstArrayView<FRHIShaderParameterResource>());
 
 	Context->RHIDrawPrimitive(0, 2, 1);
 	Context->RHIEndRenderPass();

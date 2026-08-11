@@ -78,6 +78,21 @@ echo "[4/5] Prepending real compile-time constants + running a real C-preprocess
   # defines when it's NOT sRGB) -- matches the real default, and avoids
   # ColorSpace.ush's #else branch which needs those extra matrix defines.
   echo '#define WORKING_COLOR_SPACE_IS_SRGB 1'
+  # SUBSTRATE_ENABLED=0: real UE (5.8) always defines this via the shader
+  # environment (Substrate.ush #errors if undefined); this naive-flatten
+  # recipe has no permutation-domain plumbing to set it per-shader, and 0
+  # is the correct default for any shader whose used code path does not
+  # actually touch Substrate (SUBSTRATE_ENABLED gates out Substrate.ush's
+  # body entirely at #if SUBSTRATE_ENABLED). Real, reproducible wall this
+  # session (HANDOFF.md "Update 12"): DistortApplyScreenPS.usf
+  # unconditionally #includes Substrate.ush at file scope even though its
+  # default (non-rough-refraction) Main() never touches it; without this
+  # define real DXC compilation fails with genuine "use of undeclared
+  # identifier" errors deep in Substrate BSDF-packing code that depends on
+  # defines this naive-flatten recipe cannot supply. A shader that DOES
+  # need real Substrate content would need a real permutation-aware cook
+  # path, out of scope here.
+  echo '#define SUBSTRATE_ENABLED 0'
   cat "$WORK/flat_body.hlsl"
 } > "$WORK/flat_final.hlsl"
 

@@ -1,0 +1,110 @@
+evaluation warning: The xorg package set has been deprecated, 'xorg.libX11' has been renamed to 'libx11'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libXcomposite' has been renamed to 'libxcomposite'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libXdamage' has been renamed to 'libxdamage'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libXext' has been renamed to 'libxext'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libXfixes' has been renamed to 'libxfixes'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libXrandr' has been renamed to 'libxrandr'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libxcb' has been renamed to 'libxcb'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libXrender' has been renamed to 'libxrender'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libXi' has been renamed to 'libxi'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libXtst' has been renamed to 'libxtst'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libXcursor' has been renamed to 'libxcursor'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libXScrnSaver' has been renamed to 'libxscrnsaver'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libX11' has been renamed to 'libx11'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libXcomposite' has been renamed to 'libxcomposite'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libXdamage' has been renamed to 'libxdamage'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libXext' has been renamed to 'libxext'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libXfixes' has been renamed to 'libxfixes'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libXrandr' has been renamed to 'libxrandr'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libxcb' has been renamed to 'libxcb'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libXrender' has been renamed to 'libxrender'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libXi' has been renamed to 'libxi'
+evaluation warning: The xorg package set has been deprecated, 'xorg.libXcursor' has been renamed to 'libxcursor'
+LogInit: Running DelayedAutoRegister Phase StartOfEnginePreInit
+LogInit: Running DelayedAutoRegister Phase FileSystemReady
+LogInit: Running DelayedAutoRegister Phase TaskGraphSystemReady
+LogInit: Running DelayedAutoRegister Phase StatSystemReady
+LogInit: Session CrashGUID >====================================================
+         Session CrashGUID >   UECC-Linux-019FEF491C2A71E99F52A657DFEC5B77
+         Session CrashGUID >====================================================
+LogConfig: No local boot hotfix file found at: [/home/lucas/.config/Epic/DawnRHITest/Saved/PersistentDownloadDir/HotfixForNextBoot.txt]
+LogInit: Running DelayedAutoRegister Phase IniSystemReady
+LogInit: Running DelayedAutoRegister Phase EarliestPossiblePluginsLoaded
+LogInit: ExecutableName: DawnRHITest-Linux-Shipping
+LogInit: Build: UE5-CL-0
+LogInit: Platform=Linux
+LogInit: MachineId=3e6450046f9c47e08058aa35304f4533-000003e8
+LogInit: DeviceId=
+LogInit: Engine Version: 5.8.1-0+UE5
+LogInit: Compatible Engine Version: 5.8.0-0+UE5
+LogInit: Net CL: 0
+LogInit: OS: NixOS 26.11 (Zokor) (6.18.39), CPU: AMD Ryzen AI 9 HX 370 w/ Radeon 890M, GPU: NVIDIA GeForce RTX 5070 Laptop GPU (NVIDIA UNIX Open Kernel Module for x86_64  595.84  Release Build  (nixbld@))
+LogInit: CPU Model ID: 1a240, microcode revision: b204037
+LogInit: Compiled (64-bit): Aug 10 2026 20:09:38
+LogInit: Architecture: x64
+LogInit: Compiled with Clang: 20.1.8 (github.com/llvm/llvm-project 87f0227cb60147a26a1eeb4fb06e3b505e9c7261)
+LogInit: Build Configuration: Shipping
+LogInit: Branch Name: UE5
+LogInit: Command Line: -vs=/tmp/distort_final/distort_vs.wgsl -ps=/tmp/distort_final/distort_ps.wgsl -out=/tmp/distort_final/render.ppm -nocrashreports
+LogInit: Base Directory: /mnt/models/ss-build/UnrealEngine/Engine/Binaries/Linux/
+LogInit: Allocator: Mimalloc
+LogInit: Installed Engine Build: 1
+LogInit: This binary is optimized with LTO: no, PGO: no, instrumented for PGO data collection: no
+LogConfig: Applying CVar settings from Section [ConsoleVariables] File [Engine]
+LogConfig: Set CVar [[g.TimeoutForBlockOnRenderFence:60000]]
+[2026.08.11-05.26.13:902][  0]LogConfig: Set CVar [[memory.MemoryPressureCriticalThresholdPercent:10]]
+[2026.08.11-05.26.13:902][  0]LogInit: Unix hardware info:
+[2026.08.11-05.26.13:902][  0]LogInit:  - we are the first instance of this executable
+[2026.08.11-05.26.13:902][  0]LogInit:  - this process' id (pid) is 2012396, parent process' id (ppid) is 2012120
+[2026.08.11-05.26.13:902][  0]LogInit:  - we are not running under debugger
+[2026.08.11-05.26.13:902][  0]LogInit:  - machine network name is 'framepick'
+[2026.08.11-05.26.13:902][  0]LogInit:  - user name is 'lucas' (lucas)
+[2026.08.11-05.26.13:902][  0]LogInit:  - we're logged in remotely
+[2026.08.11-05.26.13:902][  0]LogInit:  - we're running with rendering
+[2026.08.11-05.26.13:902][  0]LogInit:  - CPU: AuthenticAMD 'AMD Ryzen AI 9 HX 370 w/ Radeon 890M' (signature: 0xB20F40)
+[2026.08.11-05.26.13:902][  0]LogInit:  - Number of physical cores available for the process: 12
+[2026.08.11-05.26.13:902][  0]LogInit:  - Number of logical cores available for the process: 24
+[2026.08.11-05.26.13:902][  0]LogInit:  - GPU Brand Info: NVIDIA GeForce RTX 5070 Laptop GPU (NVIDIA UNIX Open Kernel Module for x86_64  595.84  Release Build  (nixbld@))
+[2026.08.11-05.26.13:902][  0]LogInit:  - Memory allocator used: Mimalloc
+[2026.08.11-05.26.13:902][  0]LogInit:  - This is an internal build.
+[2026.08.11-05.26.13:902][  0]LogCore: Skipped benchmarking clocks because the engine is running in a standalone program mode - CLOCK_MONOTONIC will be used.
+[2026.08.11-05.26.13:902][  0]LogInit: Unix-specific commandline switches:
+[2026.08.11-05.26.13:902][  0]LogInit:  -ansimalloc - use malloc()/free() from libc (useful for tools like valgrind and electric fence)
+[2026.08.11-05.26.13:902][  0]LogInit:  -jemalloc - use jemalloc for all memory allocation
+[2026.08.11-05.26.13:902][  0]LogInit:  -binnedmalloc - use binned malloc  for all memory allocation
+[2026.08.11-05.26.13:902][  0]LogInit:  -filemapcachesize=NUMBER - set the size for case-sensitive file mapping cache
+[2026.08.11-05.26.13:902][  0]LogInit:  -useksm - uses kernel same-page mapping (KSM) for mapped memory (OFF)
+[2026.08.11-05.26.13:902][  0]LogInit:  -ksmmergeall - marks all mmap'd memory pages suitable for KSM (OFF)
+[2026.08.11-05.26.13:902][  0]LogInit:  -preloadmodulesymbols - Loads the main module symbols file into memory (OFF)
+[2026.08.11-05.26.13:902][  0]LogInit:  -sigdfl=SIGNAL - Allows a specific signal to be set to its default handler rather then ignoring the signal
+[2026.08.11-05.26.13:902][  0]LogInit:  -crashhandlerstacksize - Allows setting crash handler stack sizes (204800)
+[2026.08.11-05.26.13:902][  0]LogInit:  -noexclusivelockonwrite - disables marking files created by the engine as exclusive locked while the engine has them opened
+[2026.08.11-05.26.13:902][  0]LogInit:  -httpproxy=ADDRESS:PORT - redirects HTTP requests to a proxy (only supported if compiled with libcurl)
+[2026.08.11-05.26.13:902][  0]LogInit:  -reuseconn - allow libcurl to reuse HTTP connections (only matters if compiled with libcurl)
+[2026.08.11-05.26.13:902][  0]LogInit:  -virtmemkb=NUMBER - sets process virtual memory (address space) limit (overrides VirtualMemoryLimitInKB value from .ini)
+[2026.08.11-05.26.13:902][  0]LogInit:  -allowsyscallfilterfile=PATH_TO_FILE - sets up a system call filter allow list. any invalid syscall in this list *will* cause a crash
+[2026.08.11-05.26.13:903][  0]LogInit:  - Physical RAM available (not considering process quota): 94 GB (95837 MB, 98137396 KB, 100492693504 bytes)
+[2026.08.11-05.26.13:903][  0]LogInit:  - VirtualMemoryAllocator pools will grow at scale 1
+[2026.08.11-05.26.13:903][  0]LogInit:  - MemoryRangeDecommit() will be a no-op (re-run with -vmapoolevict to change)
+[2026.08.11-05.26.13:903][  0]LogInit:  - PageSize 4096
+[2026.08.11-05.26.13:903][  0]LogInit:  - BinnedPageSize 65536
+[2026.08.11-05.26.13:903][  0]LogInit: Using OS detected language ().
+[2026.08.11-05.26.13:903][  0]LogInit: Using OS detected locale ().
+[2026.08.11-05.26.13:903][  0]LogTextLocalizationManager: No localization for '' exists, so 'en' will be used for the language.
+[2026.08.11-05.26.13:903][  0]LogTextLocalizationManager: No localization for '' exists, so 'en' will be used for the locale.
+[2026.08.11-05.26.13:903][  0]LogInit: Using OS detected language ().
+[2026.08.11-05.26.13:903][  0]LogInit: Using OS detected locale ().
+[2026.08.11-05.26.13:903][  0]LogTextLocalizationManager: No localization for '' exists, so 'en' will be used for the language.
+[2026.08.11-05.26.13:903][  0]LogTextLocalizationManager: No localization for '' exists, so 'en' will be used for the locale.
+[2026.08.11-05.26.13:903][  0]LogDawnRHIRealShader: Loaded 1 VS binding(s), 5 PS binding(s) from real reflection sidecars
+Warning: maxDynamicUniformBuffersPerPipelineLayout artificially reduced from 500000 to 16 to fit dynamic offset allocation limit.
+Warning: maxDynamicStorageBuffersPerPipelineLayout artificially reduced from 500000 to 16 to fit dynamic offset allocation limit.
+[2026.08.11-05.26.14:082][  0]LogDawnRHI: DawnRHI adapter: nvidia / NVIDIA GeForce RTX 5070 Laptop GPU
+[2026.08.11-05.26.14:150][  0]LogDawnRHIRealShader: DawnRHI initialised: Dawn
+[2026.08.11-05.26.14:150][  0]LogTemp: DawnRHITest -realshader: LoadFileToString('/tmp/distort_final/distort_vs.wgsl') -> OK, 1272 chars
+[2026.08.11-05.26.14:150][  0]LogTemp: DawnRHITest -realshader: LoadFileToString('/tmp/distort_final/distort_ps.wgsl') -> OK, 23557 chars
+[2026.08.11-05.26.14:207][  0]LogDawnRHIRealShader: Reflected bind indices: DrawRectangleParameters=106 View=0 SceneColorTexture=132 SceneColorTextureSampler=133 DistortionTexture=136 DistortionTextureSampler=137
+[2026.08.11-05.26.14:209][  0]LogDawnRHIRealShader: Wrote /tmp/distort_final/render.ppm
+[2026.08.11-05.26.14:209][  0]LogDawnRHIRealShader: Center pixel = (255,200,40,255), corner(4,4) = (255,200,40,255)
+[2026.08.11-05.26.14:227][  0]LogDawnRHIRealShader: SUCCESS
+[2026.08.11-05.26.14:227][  0]LogExit: Exiting.

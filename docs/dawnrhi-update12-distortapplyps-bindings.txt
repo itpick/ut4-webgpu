@@ -1,0 +1,5 @@
+View	0	0	UniformBuffer
+SceneColorTexture	0	132	Texture
+SceneColorTextureSampler	0	133	Sampler
+DistortionTexture	0	136	Texture
+DistortionTextureSampler	0	137	Sampler

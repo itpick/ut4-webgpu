@@ -214,19 +214,43 @@ void FDawnCommandContext::RHIEndRenderQuery(FRHIRenderQuery* RenderQuery)
 
 void FDawnCommandContext::RHISetShaderParameters(FRHIGraphicsShader* Shader, TConstArrayView<uint8> InParametersData, TConstArrayView<FRHIShaderParameter> InParameters, TConstArrayView<FRHIShaderParameterResource> InResourceParameters, TConstArrayView<FRHIShaderParameterResource> InBindlessParameters)
 {
-	// Stage 2: build a @group(0) bind group against the fixed
-	// {UB@0, Texture@1, Sampler@2} layout every DawnRHI PSO uses (see the
-	// NOTE on FDawnGraphicsPipelineState::BindGroupLayout). No shader
-	// reflection yet, so each FRHIShaderParameterResource's own Index is
-	// trusted directly as the WGSL binding number.
-	checkf(CurrentPSO && CurrentPSO->BindGroupLayout, TEXT("DawnRHI: RHISetShaderParameters requires RHISetGraphicsPipelineState to have run first"));
+	// Stage 2 fallback / multi-@group fix (this session): when the bound PSO
+	// carries real reflection data (FDawnVertexShader/FDawnPixelShader::
+	// Bindings — see DawnResources.h/RHICreateGraphicsPipelineState in
+	// DawnDynamicRHI.cpp), each FRHIShaderParameterResource::Index is a real
+	// flattened WGSL @binding number, but NOT necessarily @group(0) — a
+	// caller (like DawnRHITestMain's real-shader render path) can pass
+	// resources belonging to more than one real @group in a single call, so
+	// this now looks up each resource's real Group by its Binding number
+	// (scanning the bound VS+PS's reflected ::Bindings — flattened binding
+	// numbers are unique across a whole cooked shader, see HANDOFF.md
+	// "Update 12", so this is unambiguous) and issues one
+	// wgpuRenderPassEncoderSetBindGroup call per real group actually
+	// touched, against CurrentPSO->BindGroupLayouts[Group] (one layout per
+	// group — see the NOTE in DawnResources.h). Falls back to the old
+	// single-@group(0) behaviour (trusting Param.Index directly, no lookup)
+	// when the PSO has no reflection data at all, matching the Stage 1/2
+	// hand-authored WGSL paths' fixed convention.
+	checkf(CurrentPSO && CurrentPSO->BindGroupLayouts.Num() > 0, TEXT("DawnRHI: RHISetShaderParameters requires RHISetGraphicsPipelineState to have run first"));
 	if (InResourceParameters.Num() == 0)
 	{
 		return;
 	}
 
-	TArray<WGPUBindGroupEntry> Entries;
-	Entries.Reserve(InResourceParameters.Num());
+	auto FindGroupForBinding = [this](uint32 Binding) -> uint32
+	{
+		for (const FDawnShaderBinding& B : CurrentPSO->VertexShader->Bindings)
+		{
+			if (B.Binding == Binding) { return B.Group; }
+		}
+		for (const FDawnShaderBinding& B : CurrentPSO->PixelShader->Bindings)
+		{
+			if (B.Binding == Binding) { return B.Group; }
+		}
+		return 0; // no reflection data (or an unreflected binding) -- Stage 2 fixed convention is always @group(0)
+	};
+
+	TMap<uint32, TArray<WGPUBindGroupEntry>> EntriesByGroup;
 	for (const FRHIShaderParameterResource& Param : InResourceParameters)
 	{
 		WGPUBindGroupEntry Entry = {};
@@ -256,21 +280,27 @@ void FDawnCommandContext::RHISetShaderParameters(FRHIGraphicsShader* Shader, TCo
 			checkf(false, TEXT("DawnRHI Stage 2: unsupported shader parameter resource type %d"), (int32)Param.Type);
 			continue;
 		}
-		Entries.Add(Entry);
+		const uint32 Group = FindGroupForBinding(Param.Index);
+		EntriesByGroup.FindOrAdd(Group).Add(Entry);
 	}
 
-	WGPUBindGroupDescriptor BgDesc = {};
-	BgDesc.layout = CurrentPSO->BindGroupLayout;
-	BgDesc.entryCount = Entries.Num();
-	BgDesc.entries = Entries.GetData();
-	WGPUBindGroup BindGroup = wgpuDeviceCreateBindGroup(Owner->GetDevice(), &BgDesc);
-	checkf(BindGroup, TEXT("DawnRHI: bind group creation failed"));
-
 	checkf(ActiveRenderPass, TEXT("DawnRHI: RHISetShaderParameters requires an active render pass"));
-	wgpuRenderPassEncoderSetBindGroup(ActiveRenderPass, 0, BindGroup, 0, nullptr);
-	// The render pass encoder retains its own reference while recording;
-	// safe to release our handle once the call above returns.
-	wgpuBindGroupRelease(BindGroup);
+	for (TPair<uint32, TArray<WGPUBindGroupEntry>>& Pair : EntriesByGroup)
+	{
+		checkf(Pair.Key < (uint32)CurrentPSO->BindGroupLayouts.Num(), TEXT("DawnRHI: resource reflected @group(%u) but PSO only built %d bind group layout(s)"), Pair.Key, CurrentPSO->BindGroupLayouts.Num());
+
+		WGPUBindGroupDescriptor BgDesc = {};
+		BgDesc.layout = CurrentPSO->BindGroupLayouts[Pair.Key];
+		BgDesc.entryCount = Pair.Value.Num();
+		BgDesc.entries = Pair.Value.GetData();
+		WGPUBindGroup BindGroup = wgpuDeviceCreateBindGroup(Owner->GetDevice(), &BgDesc);
+		checkf(BindGroup, TEXT("DawnRHI: bind group creation failed for @group(%u)"), Pair.Key);
+
+		wgpuRenderPassEncoderSetBindGroup(ActiveRenderPass, Pair.Key, BindGroup, 0, nullptr);
+		// The render pass encoder retains its own reference while recording;
+		// safe to release our handle once the call above returns.
+		wgpuBindGroupRelease(BindGroup);
+	}
 }
 
 void FDawnCommandContext::RHIDrawPrimitiveIndirect(FRHIBuffer* ArgumentBuffer, uint32 ArgumentOffset)

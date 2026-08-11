@@ -337,32 +337,44 @@ FGraphicsPipelineStateRHIRef FDawnDynamicRHI::RHICreateGraphicsPipelineState(con
 	FragState.targetCount = 1;
 	FragState.targets = &ColorTarget;
 
-	// Milestone step 1: reflection-driven @group(0) bind group layout.
-	// If either shader carries real reflected bindings (FDawnVertexShader/
-	// FDawnPixelShader::Bindings, populated from the real cooked SPIR-V —
-	// see DawnResources.h/DawnShaderCompiler.cpp), build the layout from
-	// THAT (real @binding numbers, real resource kinds) instead of the old
-	// fixed {UB@0,Texture@1,Sampler@2} table. Falls back to the fixed table
-	// only when neither shader has reflection data — the Stage 1/2
-	// hand-authored WGSL test paths (DawnRHITestMain's synthetic
-	// scene_vs/scene_ps) still rely on that fixed convention by
-	// construction and never populate ::Bindings.
-	TArray<WGPUBindGroupLayoutEntry> LayoutEntries;
-	auto AppendShaderBindings = [&LayoutEntries](const TArray<FDawnShaderBinding>& Bindings, WGPUShaderStage Stage)
+	// Milestone step 1 (+ this session's multi-@group fix): reflection-driven
+	// bind group layout(s), one WGPUBindGroupLayout PER real reflected
+	// FDawnShaderBinding::Group value (not just @group(0) — see the NOTE on
+	// FDawnGraphicsPipelineState::BindGroupLayouts in DawnResources.h for why
+	// this changed and what's actually been exercised by real content so
+	// far). If either shader carries real reflected bindings
+	// (FDawnVertexShader/FDawnPixelShader::Bindings, populated from the real
+	// cooked SPIR-V — see DawnResources.h/DawnShaderCompiler.cpp), build the
+	// layout(s) from THAT (real @group/@binding numbers, real resource
+	// kinds) instead of the old fixed {UB@0,Texture@1,Sampler@2} table.
+	// Falls back to the fixed single-@group(0) table only when neither
+	// shader has reflection data — the Stage 1/2 hand-authored WGSL test
+	// paths (DawnRHITestMain's synthetic scene_vs/scene_ps) still rely on
+	// that fixed convention by construction and never populate ::Bindings.
+	TMap<uint32, TArray<WGPUBindGroupLayoutEntry>> EntriesByGroup;
+	auto AppendShaderBindings = [&EntriesByGroup](const TArray<FDawnShaderBinding>& Bindings, WGPUShaderStage Stage)
 	{
 		for (const FDawnShaderBinding& B : Bindings)
 		{
-			// Multiple shader stages can reflect the SAME @group(0)/@binding
+			TArray<WGPUBindGroupLayoutEntry>& LayoutEntries = EntriesByGroup.FindOrAdd(B.Group);
+
+			// Multiple shader stages can reflect the SAME @group/@binding
 			// (e.g. a uniform buffer read by both VS and PS) — merge visibility
 			// instead of adding a duplicate WGPUBindGroupLayoutEntry (Dawn
 			// rejects a layout with two entries at the same binding number).
+			bool bMerged = false;
 			for (WGPUBindGroupLayoutEntry& Existing : LayoutEntries)
 			{
 				if (Existing.binding == B.Binding)
 				{
 					Existing.visibility |= Stage;
-					return;
+					bMerged = true;
+					break;
 				}
+			}
+			if (bMerged)
+			{
+				continue;
 			}
 			WGPUBindGroupLayoutEntry Entry = {};
 			Entry.binding = B.Binding;
@@ -388,12 +400,12 @@ FGraphicsPipelineStateRHIRef FDawnDynamicRHI::RHICreateGraphicsPipelineState(con
 	AppendShaderBindings(VS->Bindings, WGPUShaderStage_Vertex);
 	AppendShaderBindings(PS->Bindings, WGPUShaderStage_Fragment);
 
-	WGPUBindGroupLayoutEntry FixedLayoutEntries[3] = {};
-	if (LayoutEntries.Num() == 0)
+	if (EntriesByGroup.Num() == 0)
 	{
 		// No reflection data on either shader — fall back to Stage 2's
 		// original fixed convention (see the NOTE on
-		// FDawnGraphicsPipelineState::BindGroupLayout in DawnResources.h).
+		// FDawnGraphicsPipelineState::BindGroupLayouts in DawnResources.h).
+		WGPUBindGroupLayoutEntry FixedLayoutEntries[3] = {};
 		FixedLayoutEntries[0].binding = 0;
 		FixedLayoutEntries[0].visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
 		FixedLayoutEntries[0].buffer.type = WGPUBufferBindingType_Uniform;
@@ -404,17 +416,38 @@ FGraphicsPipelineStateRHIRef FDawnDynamicRHI::RHICreateGraphicsPipelineState(con
 		FixedLayoutEntries[2].binding = 2;
 		FixedLayoutEntries[2].visibility = WGPUShaderStage_Fragment;
 		FixedLayoutEntries[2].sampler.type = WGPUSamplerBindingType_Filtering;
-		LayoutEntries.Append(FixedLayoutEntries, 3);
+		EntriesByGroup.Add(0).Append(FixedLayoutEntries, 3);
 	}
 
-	WGPUBindGroupLayoutDescriptor BglDesc = {};
-	BglDesc.entryCount = LayoutEntries.Num();
-	BglDesc.entries = LayoutEntries.GetData();
-	WGPUBindGroupLayout BindGroupLayout = wgpuDeviceCreateBindGroupLayout(Device, &BglDesc);
+	// WGPUPipelineLayoutDescriptor::bindGroupLayouts is positional — index i
+	// in that array IS @group(i) as far as Dawn/the shader is concerned — so
+	// every group index from 0 up to the highest real reflected group must
+	// have an entry, even if some intermediate group index was never
+	// reflected by either shader (an empty WGPUBindGroupLayout, 0 entries,
+	// is valid and simply means "nothing bound at this group").
+	uint32 MaxGroup = 0;
+	for (const TPair<uint32, TArray<WGPUBindGroupLayoutEntry>>& Pair : EntriesByGroup)
+	{
+		MaxGroup = FMath::Max(MaxGroup, Pair.Key);
+	}
+
+	TArray<WGPUBindGroupLayout> BindGroupLayouts;
+	BindGroupLayouts.SetNum(MaxGroup + 1);
+	for (uint32 Group = 0; Group <= MaxGroup; ++Group)
+	{
+		const TArray<WGPUBindGroupLayoutEntry>* GroupEntries = EntriesByGroup.Find(Group);
+		WGPUBindGroupLayoutDescriptor BglDesc = {};
+		if (GroupEntries)
+		{
+			BglDesc.entryCount = GroupEntries->Num();
+			BglDesc.entries = GroupEntries->GetData();
+		}
+		BindGroupLayouts[Group] = wgpuDeviceCreateBindGroupLayout(Device, &BglDesc);
+	}
 
 	WGPUPipelineLayoutDescriptor PlDesc = {};
-	PlDesc.bindGroupLayoutCount = 1;
-	PlDesc.bindGroupLayouts = &BindGroupLayout;
+	PlDesc.bindGroupLayoutCount = BindGroupLayouts.Num();
+	PlDesc.bindGroupLayouts = BindGroupLayouts.GetData();
 	WGPUPipelineLayout PipelineLayout = wgpuDeviceCreatePipelineLayout(Device, &PlDesc);
 
 	WGPUDepthStencilState DepthStencil = {};
@@ -457,7 +490,7 @@ FGraphicsPipelineStateRHIRef FDawnDynamicRHI::RHICreateGraphicsPipelineState(con
 	PSO->Pipeline = Pipeline;
 	PSO->VertexShader = VS;
 	PSO->PixelShader = PS;
-	PSO->BindGroupLayout = BindGroupLayout;
+	PSO->BindGroupLayouts = MoveTemp(BindGroupLayouts);
 	PSO->PipelineLayout = PipelineLayout;
 	return PSO;
 }

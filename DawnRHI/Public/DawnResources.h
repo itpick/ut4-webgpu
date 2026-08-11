@@ -125,7 +125,25 @@ public:
 	// that don't use all three simply don't declare the unused bindings in
 	// WGSL; Dawn only requires the *bind group* contents to satisfy whatever
 	// the shader actually references, not the other way around.
-	WGPUBindGroupLayout BindGroupLayout = nullptr;
+	//
+	// Multi-@group fix (this session): real reflected bindings carry their
+	// own FDawnShaderBinding::Group (see above), but until now
+	// RHICreateGraphicsPipelineState silently ignored it and always built
+	// exactly one WGPUBindGroupLayout/PipelineLayout with
+	// bindGroupLayoutCount=1 — every reflected binding was folded into
+	// @group(0) regardless of what the real cooked WGSL declared. Empirically
+	// every real UE global shader cooked through this toolchain so far
+	// (ScreenPass.usf, DistortApplyScreenPS.usf — see HANDOFF.md "Update 12")
+	// DOES land entirely in @group(0) (ShaderConductor's DXC->SPIR-V path
+	// assigns one flat descriptor set here), so the bug was latent/untested
+	// rather than a live symptom — but it was still a real correctness gap
+	// for any future shader that legitimately reflects >1 group. Now:
+	// BindGroupLayouts/PipelineLayout are keyed by the real distinct Group
+	// values found across VS+PS bindings (still exactly 1 entry for every
+	// real shader cooked so far, 0-length falls back to the old fixed
+	// single-@group(0) 3-slot convention below for the Stage 1/2
+	// hand-authored WGSL paths).
+	TArray<WGPUBindGroupLayout> BindGroupLayouts;
 	WGPUPipelineLayout PipelineLayout = nullptr;
 
 	virtual FRHIGraphicsShader* GetShader(EShaderFrequency Frequency) const override
@@ -142,7 +160,7 @@ public:
 	{
 		if (Pipeline) { wgpuRenderPipelineRelease(Pipeline); }
 		if (PipelineLayout) { wgpuPipelineLayoutRelease(PipelineLayout); }
-		if (BindGroupLayout) { wgpuBindGroupLayoutRelease(BindGroupLayout); }
+		for (WGPUBindGroupLayout Layout : BindGroupLayouts) { if (Layout) { wgpuBindGroupLayoutRelease(Layout); } }
 	}
 };
 
