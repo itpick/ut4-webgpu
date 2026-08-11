@@ -1,4 +1,213 @@
-# DawnRHI handoff — 2026-08-10 (update 3: broke through the `View` wall — real UT4/global shader now compiles past View/ViewState/LWC)
+# DawnRHI handoff — 2026-08-10 (update 4: THE LAST WALL IS BROKEN — a real, unmodified UE global shader now cooks 100% end-to-end through DawnShaderFormat to valid WGSL)
+
+Read this first, then "Update 3" below it, then "Update 2", then "Update 1".
+Branch `dawnrhi-stage1`, pushed to `itpick/ut4-webgpu`. Same clean-path
+constraints as ever.
+
+## TL;DR
+
+Update 3 ended at ONE precisely-diagnosed remaining wall: real UE's
+auto-generated `UniformBuffer Name { ... }` block (member-remapping
+metadata emitted by `CreateHLSLUniformBufferDeclaration()`) got rejected by
+DXC as an unknown type. **This session found and fixed the real root cause
+(not a workaround) and the milestone's step 1 is DONE**: `NullPixelShader.usf`
+(a real, unmodified UE global shader) now compiles all the way through
+`DawnShaderFormat`'s real `CompilePreprocessedShader()` — DXC → SPIR-V →
+SPIRV-Tools legalize/strip-reflect → Tint → valid WGSL — logging
+`LogDawnCookProbe: SUCCESS` and producing real, well-formed, correct WGSL:
+
+```wgsl
+var<private> v : vec4<f32>;
+fn Main_inner() { v = vec4<f32>(); }
+@fragment fn Main() -> @location(0u) vec4<f32> { Main_inner(); return v; }
+```
+
+(This is the CORRECT translation — `NullPixelShader.usf`'s real body is
+literally `float4 Main() : SV_Target0 { return 0; }`, so a minimal
+zero-returning WGSL fragment shader is exactly right, not a sign of
+something missing.)
+
+Three real, independent walls had to be found and fixed, in this order —
+each is a genuine engine-behavior finding, not a guess-and-check patch:
+
+### Wall 1 (the actual `UniformBuffer{}` wall): missing macro expansion before `CleanupUniformBufferCode`
+
+Real UE's production pipeline is: `::PreprocessShader()` (a REAL, full
+C-preprocessor pass: macro expansion + `#if`/`#else`/`#endif` evaluation)
+runs FIRST, then `FBaseShaderFormat::PreprocessShader()` calls
+`ExecuteShaderPreprocessingSteps()` which calls the real, exported
+`CleanupUniformBufferCode()` (`ShaderCompilerCommon.cpp`) — confirmed by
+reading both functions directly. `CleanupUniformBufferCode` is
+self-contained and real: it naive-text-scans for `UniformBuffer Name { ... }`
+blocks, parses each member's `Struct.Member = Global_Name;` assignment
+line, comments out + compacts away the whole block, and rewrites every
+`Name.Member` dot-access usage in the REST of the source to the flat
+`Name_Member` global form.
+
+Our naive-flatten cook path (`DawnCookProbeMain.cpp`'s default mode) never
+calls `PreprocessShader()` at all — it hand-builds `FShaderPreprocessOutput`
+directly from `flatten_includes.py`'s purely-textual `#include` splice, so
+it never got `CleanupUniformBufferCode` (or any macro expansion) for free.
+**Fix part A**: call the real, exported `CleanupUniformBufferCode()`
+ourselves in `DawnCookProbeMain.cpp` right after loading the flattened
+source (guarded, correctly, by a default-constructed
+`FShaderCompilerEnvironment` — its `UniformBufferMap` is only used as a
+`Reserve()` size hint, not required for correctness).
+
+That alone was NOT enough — the block still didn't get parsed correctly.
+**Root cause found by dumping the actual post-cleanup source
+(`DAWN_DUMP_PRECOOK=1` env var, new debug aid in `DawnCookProbeMain.cpp`,
+writes `<out>.precook.hlsl`) and inspecting it directly**:
+`CreateHLSLUniformBufferDeclaration()`'s `Decl.Remappings` field is
+literally emitted as **unexpanded macro-call text** —
+`UB_CB_REMAP_PARAMETER(View,ClipToView,ClipToView);` — not the expanded
+`View.ClipToView = View_ClipToView;` assignment form
+`ParseUniformBufferDefinition()` expects to parse. Real UE gets the
+expansion for free because `::PreprocessShader()` (the real C-preprocessor
+pass) runs BEFORE `CleanupUniformBufferCode`; our naive-flatten path never
+runs any macro expansion at all — `flatten_includes.py` is purely
+`#include`-textual, by design (see Update 2/3), so `#define`s are left
+completely untouched.
+
+**Fix part B**: run a REAL standalone C-preprocessor pass (UBT's own
+bundled clang, `Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/Linux_x64/
+v26_clang-20.1.8-rockylinux8/x86_64-unknown-linux-gnu/bin/clang -E -P -undef
+-ferror-limit=0 -x c`) on the flattened text BEFORE handing it to
+`DawnCookProbe`/`CleanupUniformBufferCode`. This is a real, standard,
+widely-used C preprocessor — not an invented tool — doing exactly the job
+`::PreprocessShader()` would have done for macro expansion purposes (full
+`#if`/`#define` evaluation), just standalone instead of wired through UE's
+job-dependency-cache machinery (which is the separately-diagnosed, still-
+unfixed "-real mode" blocker from Update 2).
+
+**One real wrinkle, understood and expected, not a bug**: this clang
+invocation reliably exits non-zero with ~740 diagnostics of the form
+`error: pasting formed 'View.', an invalid preprocessing token` — because
+`UB_CB_REMAP_PARAMETER`'s own macro body
+(`Platform.ush:531`: `UBName##.##StructName = UBName##_##GlobalName`)
+deliberately token-pastes `View` and `.` together, which is not a legal
+single preprocessing token under strict C/C++ token-paste rules. **Clang
+(and DXC, which shares the same Clang-derived frontend) both treat this as
+a recoverable error**: they report it as a diagnostic but still emit the
+textually-correct expanded output (`View.ClipToView = View_ClipToView;`) on
+stdout regardless. Confirmed by direct test on both a minimal snippet and
+the full ~600KB flattened file: stdout is always complete and correct
+despite the non-zero exit code; `grep -v 'pasting formed\|expanded from
+macro\|note:' ... | grep error:` on the diagnostics after this fix shows
+**zero** other error classes for this shader. **Always capture stdout
+regardless of exit code for this specific preprocessing step** —
+`tools/cook_real_shader.sh` does this correctly (`|| true`).
+
+This also fully explains an open question from Update 3's own notes: the
+"`pasting formed '.AmbientCubemapIntensity'` cascade" error class seen
+back then was DXC hitting this SAME real, expected, recoverable
+token-paste diagniostic internally (on the still-un-macro-expanded
+`UB_CB_REMAP_PARAMETER(...)` calls DXC's own preprocessor was expanding on
+the fly) — except DXC treats ANY reported error diagnostic (recoverable or
+not) as `bSucceeded=false`, unlike our standalone clang test where we only
+care about stdout. Now that `CleanupUniformBufferCode` fully strips the
+whole `UniformBuffer{}` block (containing every `UB_CB_REMAP_PARAMETER`
+call) out of the text BEFORE DXC ever sees it, DXC never triggers this
+diagnostic at all — confirmed: it's genuinely gone from the final compile,
+not suppressed.
+
+### Wall 2: `WORKING_COLOR_SPACE_RGB_TO_XYZ_MAT` undeclared
+
+`Engine/Shaders/Private/ColorSpace.ush` branches on
+`#if WORKING_COLOR_SPACE_IS_SRGB` — the `#else` (non-sRGB) branch
+references `WORKING_COLOR_SPACE_RGB_TO_XYZ_MAT`/`XYZ_TO_RGB_WORKING_COLOR_SPACE_MAT`.
+Real UE (`Engine/Source/Runtime/Engine/Private/ShaderCompiler/ShaderCompiler.cpp`,
+~line 4278) only defines those matrix constants when the project's working
+color space is NOT sRGB; `WORKING_COLOR_SPACE_IS_SRGB` itself is always
+defined (0 or 1). We weren't defining it at all, so the (undefined-treated-
+as-0-in-`#if`) branch took the non-sRGB path and referenced matrix defines
+we'd never supplied. **Fix**: predefine `WORKING_COLOR_SPACE_IS_SRGB=1` in
+the preamble — real UE's actual default project working color space is
+sRGB, so this matches production, not a workaround, and avoids needing to
+hand-compute/splice the matrix constants at all.
+
+### Wall 3: `-HV 2021` was backwards; real UE uses `-HV 2018`
+
+With walls 1+2 fixed, the next real errors were `operands for
+short-circuiting logical binary operator must be scalar, for non-scalar
+types use 'and'`/`'or'` at every real UE `&&`/`||` use on a vector type
+(pervasive in `Common.ush` etc.). Update 3 had added `-HV 2021` to
+`FDawnShaderConductorLoader::CompileHlslToSpirv`'s DXC args while chasing
+the (unrelated) `UniformBuffer` wall, reasoning it was "well-motivated by
+`COMPILER_SUPPORTS_HLSL2021`-gated code elsewhere" — but had the actual
+causality **backwards**: HLSL2021 mode is what RESTRICTS `&&`/`||` to
+scalar-only operands (wanting new `'and'`/`'or'` keywords for vectors);
+real UE shader source relies pervasively on the LEGACY behavior (vector
+`&&`/`||`, elementwise, non-short-circuiting). Simply removing `-HV 2021`
+did NOT fix it either, though — because DXC's OWN default when no `-HV` is
+passed at all is `hlsl::LangStd::vLatest` (confirmed by reading the
+vendored DXC source directly,
+`ShaderConductor/ShaderConductor/External/DirectXShaderCompiler/tools/clang/
+include/clang/Basic/LangOptions.h:155`), which in this DXC build IS the
+2021 behavior — so omitting the flag silently keeps the exact same
+failure. **Real UE's own default, confirmed by reading
+`ShaderCompilerCommon/Public/ShaderConductorContext.h:124`
+(`uint32 HlslVersion = 2018;`, unoverridden by `VulkanShaderFormat`), is
+`-HV 2018`.** Fixed: `DawnShaderConductorLoader.cpp`'s `ExtraArgs` now
+passes `"-HV", "2018"` explicitly (never omit it, never use 2021).
+
+### New tool: `tools/cook_real_shader.sh`
+
+Wraps the full, now-complete recipe (dump View/DrawRectangleParameters/
+instanced-stereo → flatten → real clang preprocess pass → `DawnCookProbe`
+cook) into one repeatable script, including correct handling of the
+benign-teardown-segfault-after-success exit code on every `DawnCookProbe`
+invocation (checks `-s <outfile>` / the `SUCCESS` log line, not `$?`).
+Tested end-to-end on `NullPixelShader.usf`: `SCRIPT_EXIT=0`, `COOK
+SUCCEEDED`, correct WGSL. Usage:
+`tools/cook_real_shader.sh <shader.usf> <EntryPoint> <vs|ps> <out.wgsl>`.
+
+### Also new: `DAWN_DUMP_PRECOOK=1` debug env var
+
+`DawnCookProbeMain.cpp`'s default mode, when this env var is set to any
+non-empty value, writes the exact post-`CleanupUniformBufferCode` source
+(what DXC is about to receive) to `<out.wgsl>.precook.hlsl`. This is what
+let this session directly inspect the real bug (unexpanded macro-call text
+in the `UniformBuffer{}` block) instead of guessing from DXC's downstream
+error messages — keep using this whenever a future wall's exact cause
+isn't obvious from compiler errors alone.
+
+### Next steps for a fresh agent (milestone steps 2/3)
+
+1. **Try a real UT4 material shader**, not just a global shader like
+   `NullPixelShader` — will need the `Primitive` uniform buffer dumped too
+   (same `-dumpubdecl Primitive` recipe as View/DrawRectangleParameters,
+   already generalized in `cook_real_shader.sh`... except it currently only
+   dumps View+DrawRectangleParameters; extend its ub-dump list for
+   `Primitive` and whatever else a chosen material type references) and
+   will likely be a MUCH bigger flattened file — watch for the clang
+   preprocess step needing more time/memory, and for new, not-yet-seen
+   `#error`/undeclared-identifier walls the same way View/ColorSpace/HV
+   were found (predefine what's real and documented, dump what's
+   C++-reflected, never hand-wave a value).
+2. **Wire real SPIR-V reflection into `FShaderCompilerOutput`/DawnRHI's
+   PSO/bind-group creation** (milestone step 2) — `tools/dawn_tint_bridge.cpp`'s
+   `ReflectBindingsSummary` already extracts real `set`/`binding`/`name`
+   triples from the legalized SPIR-V; this needs to (a) also classify
+   resource type (UBO/texture/sampler) from `OpTypeImage`/`OpTypeSampler`/
+   `OpTypeStruct`+`Block`, (b) populate `FShaderCompilerOutput::ParameterMap`
+   for real (not hardcoded) bindings, and (c) replace DawnRHI's fixed
+   `@group(0){0,1,2}` `BindGroupLayout` assumption
+   (`DawnResources.h`/`DawnDynamicRHI.cpp`) with something reflection-driven.
+3. **Render a real UT4 mesh + material through `FDawnDynamicRHI`** (milestone
+   step 3) once (1)+(2) land — reuse `DawnRHITest`'s existing real-RHI
+   scene-render/readback-PNG plumbing (Update 1), just swap in a cooked
+   real-content shader pair instead of the synthetic `scene_vs`/`scene_ps.hlsl`.
+4. `Engine/Source/Programs/DawnCookProbe/Private/DawnCookProbeMain.cpp` and
+   `Engine/Source/Developer/DawnShaderFormat/Private/DawnShaderConductorLoader.cpp`
+   are the two files touched this session (both pushed, both mirrored at
+   framepick's `/home/lucas/workspace/ut4-webgpu-push/DawnCookProbe/Private/`
+   and `.../DawnShaderFormat/Private/` for the push repo's flat layout —
+   NOT the same directory structure as the engine tree at
+   `/mnt/models/ss-build/UnrealEngine/Engine/Source/...`, keep both in sync
+   by hand when editing either).
+
+## Update 3 (previous session, preserved below): broke through the `View` wall — real UT4/global shader now compiles past View/ViewState/LWC
 
 Read this first, then "Update 2" below it, then "Update 1". Branch
 `dawnrhi-stage1`, pushed to `itpick/ut4-webgpu`. Same clean-path constraints

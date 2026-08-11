@@ -125,15 +125,26 @@ bool FDawnShaderConductorLoader::CompileHlslToSpirv(
 
 	Compiler::Options Options = {};
 	Options.disableOptimizations = bDisableOptimizations;
-	// -HV 2021: real UE shader source uses `&&`/`||` on vector types, which
-	// DXC only allows in HLSL2021 mode (non-2021 wants and/or) -- keeping
-	// this is well-motivated by COMPILER_SUPPORTS_HLSL2021-gated code
-	// elsewhere in real shader source. NOTE: this alone did NOT unlock the
-	// separate, still-unsolved `UniformBuffer Name { ... }` block-remap
-	// construct real UE's CreateUniformBufferShaderDeclaration() also
-	// emits (tried -HV 2021 and a shaderModel {6,6} bump, neither changed
-	// that error at all -- see HANDOFF.md "update 3", "Where it stops now").
-	static const char* ExtraArgs[] = { "-fspv-target-env=vulkan1.1", "-HV", "2021" };
+	// -HV 2018 (NOT 2021, NOT omitted -- see HANDOFF.md "update 4"):
+	// real UE's own default is 2018 (ShaderConductorContext.h:124,
+	// `uint32 HlslVersion = 2018;`, unoverridden by VulkanShaderFormat/etc)
+	// -- confirmed by reading that header directly, not guessed. HLSL2021
+	// mode RESTRICTS `&&`/`||` to scalar-only operands (wanting the new
+	// 'and'/'or' keywords for vectors instead), which real UE shader
+	// source (Common.ush etc.) does NOT use -- it relies pervasively on
+	// vector `&&`/`||`. Critically, DXC's OWN default when no -HV is
+	// passed at all is `hlsl::LangStd::vLatest` (confirmed via
+	// ShaderConductor's vendored DXC source,
+	// clang/include/clang/Basic/LangOptions.h:155) which in this DXC
+	// build IS the 2021 behavior -- so simply omitting -HV does NOT
+	// recover legacy semantics, it silently keeps the exact same failure.
+	// Must explicitly pass "2018" to match real UE. Confirmed by direct
+	// repro: with -HV 2021 (or no -HV at all) present, a real,
+	// fully-preprocessed NullPixelShader.usf failed with "operands for
+	// short-circuiting logical binary operator must be scalar, for
+	// non-scalar types use 'and'/'or'" at every real vector &&/|| use
+	// site; explicit -HV 2018 made that whole error class disappear.
+	static const char* ExtraArgs[] = { "-fspv-target-env=vulkan1.1", "-HV", "2018" };
 	Options.numDXCArgs = 3;
 	Options.DXCArgs = ExtraArgs;
 

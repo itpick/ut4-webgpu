@@ -23,6 +23,7 @@
 #include "Interfaces/IShaderFormat.h"
 #include "Interfaces/IShaderFormatModule.h"
 #include "ShaderCompilerCore.h"
+#include "ShaderCompilerCommon.h" // CleanupUniformBufferCode() -- see the UniformBuffer{} strip below
 #include "ShaderPreprocessTypes.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Parse.h"
@@ -291,6 +292,42 @@ int32 GuardedMain(int32 ArgC, TCHAR* ArgV[])
 		FTCHARToUTF8 Utf8Source(*PreprocessedSource);
 		FAnsiStringView SourceView(reinterpret_cast<const ANSICHAR*>(Utf8Source.Get()), Utf8Source.Length());
 		PreprocessOutput.EditSource() = FShaderSource(SourceView);
+	}
+
+	// The remaining real wall documented in HANDOFF.md ("UniformBuffer Name
+	// { ... }" rejected by DXC as an unknown type): this text is NOT meant
+	// to reach a backend compiler as-is. It's real, auto-generated *metadata*
+	// (member-remapping directives, e.g. "View.WorldToClip" -> "View_WorldToClip")
+	// that every real UE shader format gets stripped for free by
+	// FBaseShaderFormat::PreprocessShader() -> ExecuteShaderPreprocessingSteps()
+	// -> CleanupUniformBufferCode() (ShaderCompilerCommon.cpp) BEFORE
+	// CompilePreprocessedShader() ever sees the source -- confirmed by reading
+	// both functions directly. We bypass PreprocessShader() entirely in this
+	// (naive-flatten) code path, constructing PreprocessOutput by hand, so we
+	// never got that step for free. Call the exact same real, exported
+	// function ourselves -- not a new/invented transform, the identical one
+	// every real Vulkan/Metal/D3D shader compile already relies on.
+	// CleanupUniformBufferCode is self-contained: it parses the "UniformBuffer
+	// Name { ... }" block(s) directly out of the source text itself (member
+	// names + global remap names are all in that block's own generated text),
+	// rewrites every "Name.Member" dot-access reference in the rest of the
+	// source to the flat "Name_Member" form, and then comments out + compacts
+	// away the "UniformBuffer{}" scaffolding block. Environment.UniformBufferMap
+	// is only used as a Reserve() size hint here (not required for
+	// correctness), so a default-constructed Environment is legitimate.
+	{
+		FShaderCompilerEnvironment CleanupEnvironment;
+		CleanupUniformBufferCode(CleanupEnvironment, PreprocessOutput.EditSource());
+		UE_LOG(LogDawnCookProbe, Log, TEXT("CleanupUniformBufferCode: stripped 'UniformBuffer{}' remap blocks. %d chars remain."), PreprocessOutput.GetSourceViewWide().Len());
+
+		// Debug aid (env-var gated, not real functionality): dump the exact
+		// post-cleanup source DXC is about to receive, so wall diagnosis never
+		// has to guess at what the rewrite actually produced.
+		if (FPlatformMisc::GetEnvironmentVariable(TEXT("DAWN_DUMP_PRECOOK")).Len() > 0)
+		{
+			FFileHelper::SaveStringToFile(FString(PreprocessOutput.GetSourceViewWide()), *(OutPath + TEXT(".precook.hlsl")));
+			UE_LOG(LogDawnCookProbe, Log, TEXT("DAWN_DUMP_PRECOOK: wrote %s.precook.hlsl"), *OutPath);
+		}
 	}
 
 	FShaderCompilerOutput Output;
