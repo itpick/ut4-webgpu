@@ -1,0 +1,12 @@
+--- /mnt/vms/ss-build/UnrealEngine/Engine/Platforms/SimplyStream/Source/Runtime/Launch/Private/LaunchSimplyStream.cpp.bak	2026-08-11 21:40:58.160670449 -0500
++++ /mnt/vms/ss-build/UnrealEngine/Engine/Platforms/SimplyStream/Source/Runtime/Launch/Private/LaunchSimplyStream.cpp	2026-08-11 21:40:58.190669466 -0500
+@@ -188,7 +188,8 @@
+ 	}
+ 	FCString::Strcat(GCmdLine, ANSI_TO_TCHAR(" -stdout"));
+ 
+-	SimplyStreamMain();
++	/* wndr standalone: closed SimplyStreamMain() blocks the game thread on the platform host before PreInit; skip it (set WNDR_RUN_SS_MAIN to restore) */
++	if (getenv("WNDR_RUN_SS_MAIN")) SimplyStreamMain();
+ 	SIMPLYSTREAM_Init();
+ 	emscripten_exit_with_live_runtime();
+ 	return 0;
