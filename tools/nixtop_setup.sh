@@ -20,3 +20,6 @@ ln -sfn /mnt/vms/ss-build/stock-emsdk $UE/Engine/Platforms/SimplyStream/emsdk
 UE=/mnt/vms/ss-build/UnrealEngine
 sed -i "s#/mnt/models/ss-build#/mnt/vms/ss-build#g" \
   "$UE/Engine/Platforms/SimplyStream/Source/Runtime/Launch/Launch_SimplyStream.Build.cs" 2>/dev/null || true
+# 4. Lower the wasm initial-memory so the browser tab can load it (was 3998MB=3.9GB fixed reservation -> tab OOM/Error5).
+sed -i "s/^InitialMemoryMB=3998/InitialMemoryMB=256/; s/^MaximumMemoryMB=3998/MaximumMemoryMB=2048/" \
+  "$UE/Engine/Platforms/SimplyStream/Config/SimplyStreamEngine.ini" 2>/dev/null || true

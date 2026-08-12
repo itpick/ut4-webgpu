@@ -1,0 +1,162 @@
+[SimplyStreamSection]
+bIsSimplyStream=true
+
+[Internationalization]
++LocalizationPaths=../../../Engine/Platforms/SimplyStream/Content/Localization/SimplyStream
+
+[Audio]
+AudioMixerModuleName=SimplyStreamAudioMixer
+
+; Defines a platform-specific volume headroom (in dB) for audio to provide better platform consistency with respect to volume levels.
+PlatformHeadroomDB=0
+PlatformFormat=OGG
+; Streamed waves use RADA (RAD Audio): unlike OGG it supports *seekable* streaming, so a looping
+; streamed wave can seek to frame 0 each loop instead of warning "non-seekable wave ... to frame 0"
+; and going silent. The wasm64 RAD decoder ships with the platform (RadAudioDecoder_SimplyStream).
+; (GetWaveFormat in SimplyStreamTargetPlatformControls.h is the authoritative cook selector and
+; mirrors this; this key keeps the FAudioFormatSettings PlatformSpecific path consistent.)
+PlatformStreamingFormat=RADA
+
+
+[OnlineSubsystemMcp]
+benabled=false
+
+[OnlineSubsystem]
+DefaultPlatformService=SimplyStream
+
+[OnlineServices]
+; Lyra 5.8's CommonUser uses the v2 OnlineServices stack, and the project sets DefaultServices=Null — so the
+; client's login goes to the Null v2 provider and never reaches our v1 OnlineSubsystemSimplyStream ("failed to
+; login" with NO network call). Route v2 -> v1 via the OSSAdapter over our v1 OSS (DefaultPlatformService above)
+; so CommonUser login/sessions hit the SimplyStream backend. (SimplyStreamEngine.ini overrides the project config
+; for SimplyStream builds, same as the NetDriverDefinitions/bUseBeacons overrides here.)
+DefaultServices=OSSv1
+
+[ImportedRHI]
+ModuleName=WebGPURHI
+RHIName=WebGPU
+FeatureLevel=ES3_1
+
+[SystemSettings]
+r.setres=1366x768
+
+[/Script/Engine.GameEngine]
+!NetDriverDefinitions=ClearArray
+; WebTransport (HTTP/3 datagrams, UDP-like) is the PRIMARY game net driver; the engine falls back to the
+; WebSocket driver synchronously if the WebTransport driver's CDO IsAvailable() is false (no browser support /
+; no init_wt on the Node runner), and asynchronously via the driver's connect-deadline + the plugin module's
+; DEFERRED re-travel (one tick — an immediate re-travel loses to the engine's synchronous return-to-entry).
+; Server side requires the mp runtime's init_wt H3 bridge (multiplayer-runtime wasm-loader.js) + a UDP
+; firewall rule on the wss port; without them the runner serves wss only and clients arrive via the fallback.
++NetDriverDefinitions=(DefName="GameNetDriver", DriverClassName="/Script/WebTransportNetworkingSimplyStream.WebTransportNetDriver", DriverClassNameFallback="/Script/WebSocketNetworkingSimplyStream.WebSocketNetDriver")
+
+[/Script/CommonUser.CommonSessionSubsystem]
+; Disable CommonUser's OSSv1 reservation-beacon flow on SimplyStream. The beacon uses a separate
+; BeaconNetDriver NetDriverDefinition (IpNetDriver by default) which (a) was cleared above and (b) cannot
+; bind a BSD socket under wasm anyway — so AOnlineBeaconHost::InitHost() returns false and Lyra's
+; verify(...) in CreateHostReservationBeacon() fails the host on every session create. SimplyStream handles
+; session reservations/matchmaking through the SimplyStream OSS backend (CreateSession), not UE beacons —
+; the same reason Lyra's Steam custom config disables them (Config/Custom/Steam/DefaultEngine.ini). With this
+; off, FinishSessionCreation goes straight to ServerTravel and clients travel directly.
+bUseBeacons=false
+
+[/Script/WebTransportNetworkingSimplyStream.WebTransportNetDriver]
+AllowPeerConnections=False
+AllowPeerVoice=False
+ConnectionTimeout=60.0
+InitialConnectTimeout=120.0
+RecentlyDisconnectedTrackingTime=180
+AckTimeout=10.0
+KeepAliveTime=20.2
+MaxClientRate=15000
+MaxInternetClientRate=10000
+RelevantTimeout=5.0
+SpawnPrioritySeconds=1.0
+ServerTravelPause=4.0
+NetServerMaxTickRate=30
+LanServerMaxTickRate=35
+WebTransportPort=8890
+NetConnectionClassName="/Script/WebTransportNetworkingSimplyStream.WebTransportConnection"
+MaxPortCountToTry=512
+
+[/Script/WebSocketNetworkingSimplyStream.WebSocketNetDriver]
+AllowPeerConnections=False
+AllowPeerVoice=False
+ConnectionTimeout=60.0
+InitialConnectTimeout=120.0
+RecentlyDisconnectedTrackingTime=180
+AckTimeout=10.0
+KeepAliveTime=20.2
+MaxClientRate=15000
+MaxInternetClientRate=10000
+RelevantTimeout=5.0
+SpawnPrioritySeconds=1.0
+ServerTravelPause=4.0
+NetServerMaxTickRate=30
+LanServerMaxTickRate=35
+WebSocketPort=8889
+NetConnectionClassName="/Script/WebSocketNetworkingSimplyStream.WebSocketConnection"
+MaxPortCountToTry=512
+
+[/Script/SimplyStreamTargetPlatformSettings.SimplyStreamTargetSettings]
+Compressed=False
+EnableIndexedDB=True
+PackageAll=True
+EnableSIMD=True
+DeployServerPort=53501
+EnableTracing=False
+CanvasScalingMode=Aspect
+EnableMultithreading=True
+OffscreenCanvas=True
+LLVMWasmBackend=True
+InitialMemoryMB=256
+MaximumMemoryMB=2048
+RenderMode=WebGPUALL
+EmscriptenLTOMode=None
+MaximumOptimizations=False
+EmscriptenMemoryMode=Memory64_Emulated
+
+
+[/Script/SimplyStreamPlatformEditor.SimplyStreamBrowsers]
+; common browser locations - add your custom locations here
+
+; windows
++BrowserLauncher=(BrowserName="FF Nightly(32bit)", BrowserPath=(FilePath="C:/Program Files (x86)/Firefox Nightly/firefox.exe"))
++BrowserLauncher=(BrowserName="FF Dev(32bit)",     BrowserPath=(FilePath="C:/Program Files (x86)/Firefox Developer Edition/firefox.exe"))
++BrowserLauncher=(BrowserName="Firefox(32bit)",    BrowserPath=(FilePath="C:/Program Files (x86)/Mozilla Firefox/firefox.exe"))
++BrowserLauncher=(BrowserName="FF Nightly",        BrowserPath=(FilePath="C:/Program Files/Firefox Nightly/firefox.exe"))
++BrowserLauncher=(BrowserName="FF Dev",            BrowserPath=(FilePath="C:/Program Files/Firefox Developer Edition/firefox.exe"))
++BrowserLauncher=(BrowserName="Firefox",           BrowserPath=(FilePath="C:/Program Files/Mozilla Firefox/firefox.exe"))
+; old FF Nightly path...
++BrowserLauncher=(BrowserName="FF Nightly(32bit)", BrowserPath=(FilePath="C:/Program Files (x86)/Nightly/firefox.exe"))
++BrowserLauncher=(BrowserName="FF Nightly",        BrowserPath=(FilePath="C:/Program Files/Nightly/firefox.exe"))
+; chrome
++BrowserLauncher=(BrowserName="Chrome",         BrowserPath=(FilePath="C:/Program Files (x86)/Google/Chrome/Application/chrome.exe"))
+; Chrome Canary -- edit path to canary installation location
++BrowserLauncher=(BrowserName="Canary",            BrowserPath=(FilePath="C:/Users/your_username/AppData/Local/Google/Chrome SxS/Application/chrome.exe"))
+; Edge -- will be autodetected...
+;+BrowserLauncher=(BrowserName="Edge",           BrowserPath=(FilePath="start microsoft-edge:"))
+
+; osx
++BrowserLauncher=(BrowserName="Safari",  BrowserPath=(FilePath="/Applications/Safari.app"))
++BrowserLauncher=(BrowserName="Firefox", BrowserPath=(FilePath="/Applications/Firefox.app"))
++BrowserLauncher=(BrowserName="Chrome",  BrowserPath=(FilePath="/Applications/Google Chrome.app"))
+
+; linux
++BrowserLauncher=(BrowserName="Firefox", BrowserPath=(FilePath="/usr/bin/firefox"))
++BrowserLauncher=(BrowserName="Firefox", BrowserPath=(FilePath="/usr/bin/firefox-trunk"))
++BrowserLauncher=(BrowserName="Chrome", BrowserPath=(FilePath="/usr/bin/google-chrome"))
++BrowserLauncher=(BrowserName="Chrome", BrowserPath=(FilePath="/usr/bin/google-chrome-unstable"))
++BrowserLauncher=(BrowserName="Chromium", BrowserPath=(FilePath="/usr/bin/chromium-browser"))
+
+
+[/Script/Engine.StreamingSettings]
+; wndr IAS (2026-06-14): async loading thread + multithreaded loading enabled going forward (the build is
+; SAB-multithreaded; SupportsMultithreading()=true). NOTE: these alone do NOT fix the -Ias first-frame render
+; hang (default materials stuck WaitingForIo from a recursive PostLoad flush) — the flush runs on the game
+; thread which also owns PostLoad, so the on-demand (async) reads can't complete inline regardless. That fix
+; is a synchronously-readable local boot container for boot-critical content. These remain enabled because
+; they're wanted for IAS going forward (parallel load steps) and are read from cooked config at AsyncLoading2
+; construction (before dpcvars), so they must live here, not as a CVar/dpcvar.
+s.AsyncLoadingThreadEnabled=True
+s.AllowMultithreadedLoading=True
