@@ -1,0 +1,23 @@
+--- /mnt/vms/ss-build/UnrealEngine/Engine/Platforms/SimplyStream/Source/Programs/UnrealBuildTool/SimplyStreamToolChain.cs.bak	2026-08-10 22:38:15.000000000 -0500
++++ /mnt/vms/ss-build/UnrealEngine/Engine/Platforms/SimplyStream/Source/Programs/UnrealBuildTool/SimplyStreamToolChain.cs	2026-08-11 20:30:01.368343932 -0500
+@@ -59,8 +59,8 @@
+ 		static string profilerMode = "none";
+ 		static bool enableShippingAssertions = false;
+ 		//static bool preserveSymbolsShipping = false;
+-		static int initialMemoryMB = 2000;
+-		static int maximumMemoryMB = 2000;
++		static int initialMemoryMB = 256;
++		static int maximumMemoryMB = 2048;
+ 		static bool useUnrealInsights = false;
+ 		static bool useUBsan = false;
+ 		static bool useAsan = false;
+@@ -667,7 +667,8 @@
+ 				Result += " --merge-similar-functions --duplicate-function-elimination --inlining-optimizing --once-reduction";
+ 			}
+ 			Result += " -sINITIAL_MEMORY=" + initialMemoryMB + "MB";
+-			Result += " -sTOTAL_MEMORY=" + initialMemoryMB + "MB";
++			Result += " -sALLOW_MEMORY_GROWTH=1";
++			Result += " -sMAXIMUM_MEMORY=" + maximumMemoryMB + "MB";
+ 
+ 			if (enableMultithreading)
+ 			{

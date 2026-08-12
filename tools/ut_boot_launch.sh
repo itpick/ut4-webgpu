@@ -3,9 +3,9 @@
 # capturing the console. Runs in the foreground; the caller keeps the SSH
 # session alive (background task) so these stay up.
 set -u
-BOOT=/mnt/models/ss-build/ut-boot
-CON=/mnt/models/ss-build/ut-boot-console.log
-SRV=/mnt/models/ss-build/ut-serve.log
+BOOT=/mnt/vms/ss-build/ut-boot
+CON=/mnt/vms/ss-build/ut-boot-console.log
+SRV=/mnt/vms/ss-build/ut-serve.log
 CHROME=/home/lucas/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome
 REPO=/home/lucas/workspace/ut4-webgpu-push
 

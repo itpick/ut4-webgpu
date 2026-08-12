@@ -11,3 +11,6 @@ sed -i "s#/mnt/vms/ss-build#/mnt/vms/ss-build#g" tools/*.sh 2>/dev/null || true
 #    nix-shell /mnt/vms/ss-build/ue-cook-shell.nix --run "bash Engine/Build/BatchFiles/RunUBT.sh <Target> <Plat> <Cfg> -NoUBA"
 # NOTE: framepick-built binaries do NOT reliably run here (env-specific) -> REBUILD.
 echo nixtop_setup_done
+
+# Repoint SimplyStream emsdk symlink to migrated stock-emsdk (was framepick /mnt/models)
+ln -sfn /mnt/vms/ss-build/stock-emsdk $UE/Engine/Platforms/SimplyStream/emsdk
