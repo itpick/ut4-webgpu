@@ -1,0 +1,3 @@
+ICU wasm fix: on PLATFORM_WASM, FICUInternationalization::OpenDataFile loads ICU data via raw stdio fopen instead of IFileManager::CreateFileReader.
+Root cause proven via diagnostics: raw fopen of the ICU file succeeds on the game thread rawfopen_size=63982 but UE CreateFileReader returns NULL for the same absolute MEMFS path.
+The game-thread-cannot-see-FS theory was DISPROVEN; only UEs file layer failed. Clears ICU; UT now boots through PreInit to the project-descriptor load.
