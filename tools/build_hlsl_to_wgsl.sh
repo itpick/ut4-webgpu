@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -e
-TC=/mnt/models/ss-build/UnrealEngine/Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/Linux_x64/v26_clang-20.1.8-rockylinux8/x86_64-unknown-linux-gnu
+TC=/mnt/vms/ss-build/UnrealEngine/Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/Linux_x64/v26_clang-20.1.8-rockylinux8/x86_64-unknown-linux-gnu
 CLANGXX=$TC/bin/clang++
-DAWN=/mnt/models/ss-build/UnrealEngine/Engine/Platforms/SimplyStream/Source/ThirdParty/Dawn
-SCINC=/mnt/models/ss-build/UnrealEngine/Engine/Source/ThirdParty/ShaderConductor/ShaderConductor/Include
+DAWN=/mnt/vms/ss-build/UnrealEngine/Engine/Platforms/SimplyStream/Source/ThirdParty/Dawn
+SCINC=/mnt/vms/ss-build/UnrealEngine/Engine/Source/ThirdParty/ShaderConductor/ShaderConductor/Include
 SRC=/tmp/tint-src-fetch/dawn
 BUILD=/tmp/tint-build
 cd /tmp

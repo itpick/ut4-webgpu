@@ -34,8 +34,8 @@
 # <outfile>`.
 import sys, re, os
 
-ENGINE_SHADERS = "/mnt/models/ss-build/UnrealEngine/Engine/Shaders/Private"
-ENGINE_PUBLIC = "/mnt/models/ss-build/UnrealEngine/Engine/Shaders/Public"
+ENGINE_SHADERS = "/mnt/vms/ss-build/UnrealEngine/Engine/Shaders/Private"
+ENGINE_PUBLIC = "/mnt/vms/ss-build/UnrealEngine/Engine/Shaders/Public"
 
 INCLUDE_RE = re.compile(r'^\s*#include\s+"([^"]+)"')
 

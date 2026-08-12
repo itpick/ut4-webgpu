@@ -20,10 +20,10 @@
 # Usage: cook_real_shader.sh <shader.usf> <EntryPoint> <vs|ps> <out.wgsl>
 set -euo pipefail
 
-UE=/mnt/models/ss-build/UnrealEngine
+UE=/mnt/vms/ss-build/UnrealEngine
 BIN=$UE/Engine/Binaries/Linux/DawnCookProbe-Linux-Shipping
 CLANG=$UE/Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/Linux_x64/v26_clang-20.1.8-rockylinux8/x86_64-unknown-linux-gnu/bin/clang
-COOKSHELL=/mnt/models/ss-build/ue-cook-shell.nix
+COOKSHELL=/mnt/vms/ss-build/ue-cook-shell.nix
 
 SHADER_SRC="$1"
 ENTRY="$2"
