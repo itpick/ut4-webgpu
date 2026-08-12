@@ -14,3 +14,9 @@ echo nixtop_setup_done
 
 # Repoint SimplyStream emsdk symlink to migrated stock-emsdk (was framepick /mnt/models)
 ln -sfn /mnt/vms/ss-build/stock-emsdk $UE/Engine/Platforms/SimplyStream/emsdk
+
+# 3. Repath ENGINE-TREE source files that hardcode framepick /mnt/models (the sed above only hit tools/).
+#    Launch_SimplyStream.Build.cs PreDir (precompiled-object injection) + flatten_includes.py include roots.
+UE=/mnt/vms/ss-build/UnrealEngine
+sed -i "s#/mnt/models/ss-build#/mnt/vms/ss-build#g" \
+  "$UE/Engine/Platforms/SimplyStream/Source/Runtime/Launch/Launch_SimplyStream.Build.cs" 2>/dev/null || true
