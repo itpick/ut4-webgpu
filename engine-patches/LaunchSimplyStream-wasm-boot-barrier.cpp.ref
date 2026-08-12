@@ -1,0 +1,257 @@
+#include "CoreMinimal.h"
+#include "HAL/PlatformFileManager.h"
+#include "GenericPlatform/GenericPlatformFile.h"
+#include "Misc/App.h"
+#include "Misc/OutputDeviceError.h"
+#include "Misc/ConfigCacheIni.h"
+#include "SimplyStreamPlatformMisc.h"
+#include "LaunchEngineLoop.h"
+#include "EngineAnalytics.h"
+#include "Interfaces/IAnalyticsProvider.h"
+#include "Engine/GameViewportClient.h"
+#include "EngineUtils.h"
+#include "HAL/PlatformMemory.h"
+#include "HAL/IConsoleManager.h"
+#include "Kismet/GameplayStatics.h"
+#include "Misc/Parse.h"
+
+#ifndef KEEP_IN_MODULE
+#define KEEP_IN_MODULE extern "C" __attribute__((used, visibility("default")))
+#endif
+#include <string>
+#include <string.h>
+#include <locale.h>
+#include <pthread.h>
+#include <malloc.h>
+#include "wndr_probe.h"
+#include "CoreGlobals.h" // GFrameCounter (heartbeat)
+#include <emscripten/emscripten.h> // EMSCRIPTEN_KEEPALIVE for the probe exports below
+// Main-thread-readable stall probes (called from the simplystream.js heartbeat monitor).
+extern "C" EMSCRIPTEN_KEEPALIVE uint32_t wndr_probe_site() { return GWndrGameThreadProbe.load(std::memory_order_relaxed); }
+extern "C" EMSCRIPTEN_KEEPALIVE uint32_t wndr_net_travel_stage() { return GWndrNetTravelStage.load(std::memory_order_relaxed); }
+extern "C" EMSCRIPTEN_KEEPALIVE double wndr_game_frame() { return (double)GFrameCounter; }
+extern uint64 GFrameCounterRenderThread; // RenderCore global (static-link resolves without the module header)
+extern "C" EMSCRIPTEN_KEEPALIVE double wndr_render_frame() { return (double)GFrameCounterRenderThread; }
+#include "Async/TaskGraphInterfaces.h"
+// Field-freeze self-heal (2026-07-05): trace evidence shows the second-join freeze is the
+// game thread polling FFrameEndSync's render-command fence forever while the RENDER thread
+// sleeps in its task-queue stall wait with the fence task undelivered — a lost task-queue
+// wakeup. The [WndrHeartbeat] monitor calls this on stall; if the game recovers, the lost
+// wake is confirmed (and players get a ~15s hitch instead of a dead tab).
+extern "C" EMSCRIPTEN_KEEPALIVE void wndr_kick_named_threads() {
+	if (FTaskGraphInterface::IsRunning()) {
+		FTaskGraphInterface::Get().WakeNamedThread(ENamedThreads::GetRenderThread());
+		FTaskGraphInterface::Get().WakeNamedThread(ENamedThreads::GameThread);
+	}
+}
+// Stall forensics: pending wgpu proxy tasks at stall time. >0 during a stall = the proxy
+// consumer is wedged (names the failure layer without a trace). Impl in WebGPU.cpp.
+extern double Wndr_GetWgpuQueueDepth();
+extern "C" EMSCRIPTEN_KEEPALIVE double wndr_wgpu_qdepth() { return Wndr_GetWgpuQueueDepth(); }
+extern void Wndr_LogWgpuProxyDiag();
+extern "C" EMSCRIPTEN_KEEPALIVE void wndr_wgpu_log_diag() { Wndr_LogWgpuProxyDiag(); }
+extern "C" EMSCRIPTEN_KEEPALIVE double wndr_wgpu_proxy_queued() { return (double)GWndrWgpuProxyQueued.load(std::memory_order_relaxed); }
+extern "C" EMSCRIPTEN_KEEPALIVE double wndr_wgpu_proxy_started() { return (double)GWndrWgpuProxyStarted.load(std::memory_order_relaxed); }
+extern "C" EMSCRIPTEN_KEEPALIVE double wndr_wgpu_proxy_finished() { return (double)GWndrWgpuProxyFinished.load(std::memory_order_relaxed); }
+extern "C" EMSCRIPTEN_KEEPALIVE uint32_t wndr_wgpu_proxy_last_queued_id() { return GWndrWgpuProxyLastQueuedId.load(std::memory_order_relaxed); }
+extern "C" EMSCRIPTEN_KEEPALIVE uint32_t wndr_wgpu_proxy_current_id() { return GWndrWgpuProxyCurrentId.load(std::memory_order_relaxed); }
+extern "C" EMSCRIPTEN_KEEPALIVE uint32_t wndr_wgpu_proxy_last_finished_id() { return GWndrWgpuProxyLastFinishedId.load(std::memory_order_relaxed); }
+extern "C" EMSCRIPTEN_KEEPALIVE double wndr_wgpu_submit_calls() { return (double)GWndrWgpuQueueSubmitCalls.load(std::memory_order_relaxed); }
+extern "C" EMSCRIPTEN_KEEPALIVE double wndr_wgpu_submit_done() { return (double)GWndrWgpuQueueWorkDoneCallbacks.load(std::memory_order_relaxed); }
+extern "C" EMSCRIPTEN_KEEPALIVE double wndr_wgpu_submit_cmd_buffers() { return (double)GWndrWgpuQueueSubmittedCommandBuffers.load(std::memory_order_relaxed); }
+extern "C" EMSCRIPTEN_KEEPALIVE uint32_t wndr_wgpu_submit_status() { return GWndrWgpuQueueLastWorkDoneStatus.load(std::memory_order_relaxed); }
+extern "C" EMSCRIPTEN_KEEPALIVE double wndr_wgpu_present_begins() { return (double)GWndrWgpuPresentBegins.load(std::memory_order_relaxed); }
+extern "C" EMSCRIPTEN_KEEPALIVE double wndr_wgpu_present_ends() { return (double)GWndrWgpuPresentEnds.load(std::memory_order_relaxed); }
+extern "C" EMSCRIPTEN_KEEPALIVE uint32_t wndr_wgpu_present_stage() { return GWndrWgpuPresentCurrentStage.load(std::memory_order_relaxed); }
+extern "C" EMSCRIPTEN_KEEPALIVE uint32_t wndr_wgpu_present_last_stage() { return GWndrWgpuPresentLastStage.load(std::memory_order_relaxed); }
+extern "C" EMSCRIPTEN_KEEPALIVE uint32_t wndr_game_tick_phase() { return GWndrGameTickPhase.load(std::memory_order_relaxed); }
+extern "C" EMSCRIPTEN_KEEPALIVE double wndr_game_tick_entered() { return (double)GWndrGameTickEntered.load(std::memory_order_relaxed); }
+extern "C" EMSCRIPTEN_KEEPALIVE double wndr_game_tick_engine_done() { return (double)GWndrGameTickEngineDone.load(std::memory_order_relaxed); }
+extern "C" EMSCRIPTEN_KEEPALIVE double wndr_game_tick_platform_done() { return (double)GWndrGameTickPlatformDone.load(std::memory_order_relaxed); }
+extern "C" EMSCRIPTEN_KEEPALIVE double wndr_browser_frame_syncs() { return (double)GWndrBrowserFrameSyncs.load(std::memory_order_relaxed); }
+extern "C" EMSCRIPTEN_KEEPALIVE double wndr_browser_xr_frame_syncs() { return (double)GWndrBrowserXRFrameSyncs.load(std::memory_order_relaxed); }
+
+// On-demand allocator snapshot for CDP/doctor. mallinfo() is intentionally only called by the explicit refresh
+// export because it is too expensive for routine heartbeat use. Getters return the last coherent snapshot.
+static uint64 GWndrMemoryUsedBytes = 0;
+static uint64 GWndrMallocArenaBytes = 0;
+static uint64 GWndrMallocAllocatedBytes = 0;
+static uint64 GWndrMallocFreeBytes = 0;
+extern "C" EMSCRIPTEN_KEEPALIVE void wndr_memory_refresh()
+{
+	const FPlatformMemoryStats Stats = FPlatformMemory::GetStats();
+	const struct mallinfo Allocator = mallinfo();
+	GWndrMemoryUsedBytes = Stats.UsedPhysical;
+	GWndrMallocArenaBytes = Allocator.arena;
+	GWndrMallocAllocatedBytes = Allocator.uordblks;
+	GWndrMallocFreeBytes = Allocator.fordblks;
+}
+extern "C" EMSCRIPTEN_KEEPALIVE double wndr_memory_used_bytes() { return (double)GWndrMemoryUsedBytes; }
+extern "C" EMSCRIPTEN_KEEPALIVE double wndr_malloc_arena_bytes() { return (double)GWndrMallocArenaBytes; }
+extern "C" EMSCRIPTEN_KEEPALIVE double wndr_malloc_allocated_bytes() { return (double)GWndrMallocAllocatedBytes; }
+extern "C" EMSCRIPTEN_KEEPALIVE double wndr_malloc_free_bytes() { return (double)GWndrMallocFreeBytes; }
+
+CORE_API bool Wait2(uint32_t, const std::string&, const uint32_t);
+FEngineLoop	GEngineLoop;
+TCHAR GCmdLine[2048];
+static int GSimplyStreamArgc = 0;
+static char** GSimplyStreamArgv = nullptr;
+
+static void ApplyWndrRDGDiagnosticOverrides()
+{
+	struct FOverride
+	{
+		const TCHAR* Argument;
+		const TCHAR* CVarName;
+	};
+
+	const FOverride Overrides[] =
+	{
+		{ TEXT("-WndrRDGValidation="), TEXT("r.RDG.Validation") },
+		{ TEXT("-WndrRDGParallelExecute="), TEXT("r.RDG.ParallelExecute") },
+	};
+
+	for (const FOverride& Override : Overrides)
+	{
+		int32 Value = 0;
+		if (!FParse::Value(GCmdLine, Override.Argument, Value))
+		{
+			continue;
+		}
+
+		if (IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(Override.CVarName))
+		{
+			CVar->Set(Value, ECVF_SetByCommandline);
+			FPlatformMisc::LowLevelOutputDebugStringf(TEXT("[WndrDoctor] startup override %s=%d\n"), Override.CVarName, Value);
+		}
+	}
+}
+
+KEEP_IN_MODULE void Pause(bool val) {
+	if (!GEngine) return;
+	auto contexts = GEngine->GetWorldContexts();
+	if (contexts.Num() < 1) return;
+	UWorld* World = contexts[0].World();
+	UGameplayStatics::SetGamePaused(World, val);
+}
+void SimplyStreamFirstTick() {
+	UWorld* World = GEngine->GetWorldContexts()[0].World();
+	UGameplayStatics::SetGamePaused(World, false);
+}
+void DoSimplyStreamTick();
+KEEP_IN_MODULE void SIMPLYSTREAM_Tick() {
+	WndrMarkGameTickEnter();
+	GEngineLoop.Tick();
+	WndrMarkGameTickEngineDone();
+	DoSimplyStreamTick();
+	WndrMarkGameTickPlatformDone();
+}
+const char* beforeunload_callback(int eventType, const void* reserved, void* userData) {
+	if (FEngineAnalytics::IsAvailable())
+		FEngineAnalytics::GetProvider().EndSession();
+	return "";
+}
+
+void DoSimplyStreamInit();
+void DoSimplyStreamInitCp1();
+void DoSimplyStreamInitCp2();
+
+#include <sys/stat.h>
+#include <unistd.h>
+#include <cstdio>
+
+KEEP_IN_MODULE void SIMPLYSTREAM_Init() {
+	ApplyWndrRDGDiagnosticOverrides();
+	GEngineLoop.PreInit(0, NULL, GCmdLine);
+	DoSimplyStreamInitCp1();
+	GEngineLoop.Init();
+	DoSimplyStreamInitCp2();
+	DoSimplyStreamInit();
+	emscripten_set_beforeunload_callback(0, beforeunload_callback);
+}
+
+
+KEEP_IN_MODULE int start(const std::string& project_id, const std::string& rev);
+
+void SimplyStreamMain();
+
+KEEP_IN_MODULE void SetProjectNameForLaunch(const char* ProjectName) {
+	if (ProjectName && ProjectName[0] != '\0') {
+		FCString::Strcat(GCmdLine, TEXT(" "));
+		FCString::Strcat(GCmdLine, ANSI_TO_TCHAR(ProjectName));
+	}
+}
+
+KEEP_IN_MODULE int main2(int argc, char** argv) {
+	FTaskTagScope Scope(ETaskTag::EGameThread);
+	GCmdLine[0] = 0;
+	setlocale(LC_ALL, "C.UTF-8");
+
+	FCString::Strcpy(GCmdLine, TEXT(" "));
+	for (int Option = 1; Option < GSimplyStreamArgc; Option++) {
+		FCString::Strcat(GCmdLine, TEXT("  "));
+		FCString::Strcat(GCmdLine, ANSI_TO_TCHAR(GSimplyStreamArgv[Option]));
+	}
+	FCString::Strcat(GCmdLine, ANSI_TO_TCHAR(" -stdout"));
+
+	/* wndr standalone: closed SimplyStreamMain() blocks the game thread on the platform host before PreInit; skip it (set WNDR_RUN_SS_MAIN to restore) */
+	if (getenv("WNDR_RUN_SS_MAIN")) { SimplyStreamMain(); }
+	else {
+		/* wndr standalone: the JS loader calls main() directly, bypassing emscripten's run-dep-gated run(),
+		   so the .data package (ICU + startup content) may not be mounted when this game thread reaches
+		   ICU init. SimplyStreamMain() normally waited for it; replicate the wait by polling the VFS. */
+		struct stat st; int waited = 0; const char* p = "/Engine/Content/Internationalization/icudt64l";
+		while (stat(p, &st) != 0 && waited < 30000) { usleep(2000); waited += 2; }
+		fprintf(stderr, "[wndr] ICU-data wait: %s after %dms\\n", (stat(p,&st)==0)?"MOUNTED":"TIMEOUT", waited);
+	}
+	{ struct stat su; const char* pu="/UnrealTournament/UnrealTournament.uproject"; int wu=0; while(stat(pu,&su)!=0 && wu<30000){usleep(2000);wu+=2;} fprintf(stderr,"[wndr] uproject wait: %s after %dms size=%ld\\n",(stat(pu,&su)==0)?"MOUNTED":"TIMEOUT",wu,(long)su.st_size); } { char _cwd[256]; getcwd(_cwd,sizeof(_cwd)); struct stat _sr; int _rr=stat("../../../UnrealTournament/UnrealTournament.uproject",&_sr); struct stat _sd; int _rd=stat("/UnrealTournament/Binaries",&_sd); fprintf(stderr,"[wndr] cwd=%s relstat=%d binstat=%d\n",_cwd,_rr,_rd); }
+	// wndr wasm standalone: the IAS PathPak resolver installs itself as the top platform file and
+	// fails reads with no platform server; force the physical (FUnix) file so UE reads hit the working MEMFS.
+	FPlatformFileManager::Get().SetPlatformFile(IPlatformFile::GetPlatformPhysical());
+	fprintf(stderr, "[wndr] forced physical platform file before PreInit\n");
+	SIMPLYSTREAM_Init();
+	emscripten_exit_with_live_runtime();
+	return 0;
+}
+
+int __main_void(void) {
+	return main2(0, 0);
+}
+static void* _main_thread(void* param) {
+	emscripten_set_thread_name(pthread_self(), "Application main thread");
+	GWndrGameThreadPthread.store((uintptr_t)pthread_self(), std::memory_order_relaxed); // heartbeat probe target
+	int rtn = __main_void();
+	if (!emscripten_runtime_keepalive_check()) {
+		//exit(rtn);
+	}
+	return NULL;
+}
+#include <emscripten/stack.h>
+#include <emscripten/html5.h>
+void SIMPLYSTREAM_frameSync();
+// The main loop is rAF-driven; browsers stop rAF entirely for hidden documents, and the
+// game thread (a pthread, NOT suspended) then blocks forever on the main-thread frame
+// service — a tab switch mid-session wedges the game permanently (observed live via CDP:
+// visibilityState=hidden, rAF count 0, presented-frame counter frozen). While hidden,
+// drive the loop on a timer (browser clamps it — that is fine); resume rAF when visible.
+static EM_BOOL SIMPLYSTREAM_onVisibilityChanged(int, const EmscriptenVisibilityChangeEvent* E, void*)
+{
+	if (E->hidden) { emscripten_set_main_loop_timing(EM_TIMING_SETTIMEOUT, 100); }
+	else { emscripten_set_main_loop_timing(EM_TIMING_RAF, 0); }
+	return EM_TRUE;
+}
+EMSCRIPTEN_KEEPALIVE int main(int argc, char** argv) {
+	GSimplyStreamArgc = argc; GSimplyStreamArgv = argv; // wndr: capture before the PROXY_TO_PTHREAD hand-off
+	pthread_attr_t attr;
+	pthread_attr_init(&attr);
+	pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+	pthread_attr_setstacksize(&attr, emscripten_stack_get_base() - emscripten_stack_get_end());
+	pthread_t thread;
+	int rc = pthread_create(&thread, &attr, _main_thread, NULL);
+	pthread_attr_destroy(&attr);
+	emscripten_set_visibilitychange_callback(nullptr, EM_FALSE, SIMPLYSTREAM_onVisibilityChanged);
+	emscripten_set_main_loop(SIMPLYSTREAM_frameSync, 0, true);
+	emscripten_exit_with_live_runtime();
+	return rc;
+}
+void EmptyLinkFunctionForStaticInitializationSimplyStreamWin32(void) {}

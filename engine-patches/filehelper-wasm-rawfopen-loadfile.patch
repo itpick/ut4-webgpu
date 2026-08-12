@@ -1,0 +1,71 @@
+--- /mnt/vms/ss-build/UnrealEngine/Engine/Source/Runtime/Core/Private/Misc/FileHelper.cpp.bak_rawfopen	2026-08-12 07:44:49.452414331 -0500
++++ /mnt/vms/ss-build/UnrealEngine/Engine/Source/Runtime/Core/Private/Misc/FileHelper.cpp	2026-08-12 07:49:16.650385300 -0500
+@@ -1,6 +1,9 @@
+ // Copyright Epic Games, Inc. All Rights Reserved.
+ 
+ #include "Misc/FileHelper.h"
++#if PLATFORM_WASM
++#include <cstdio>
++#endif
+ 
+ #include "Async/AsyncFileHandle.h"
+ #include "AutoRTFM.h"
+@@ -47,6 +50,26 @@
+ 	FArchive* Reader = IFileManager::Get().CreateFileReader( Filename, Flags );
+ 	if( !Reader )
+ 	{
++#if PLATFORM_WASM
++		// wndr wasm raw-fopen fallback: the SimplyStream/IAS file layer returns a null reader on
++		// emscripten MEMFS even though raw POSIX works. Read the file directly so uproject/config/content load.
++		{
++			FILE* _fp = fopen(TCHAR_TO_UTF8(Filename), "rb");
++			if (_fp)
++			{
++				fseek(_fp, 0, SEEK_END); long _sz = ftell(_fp); fseek(_fp, 0, SEEK_SET);
++				if (_sz >= 0 && (int64)_sz + 2 <= (int64)MAX_int32)
++				{
++					Result.Reset((int32)_sz + 2); Result.AddUninitialized((int32)_sz);
++					size_t _rd = (_sz > 0) ? fread(Result.GetData(), 1, (size_t)_sz, _fp) : 0;
++					fclose(_fp);
++					if ((long)_rd == _sz) { return true; }
++				}
++				else { fclose(_fp); }
++			}
++		}
++#endif
++
+ 		if (!(Flags & FILEREAD_Silent))
+ 		{
+ 			UE_LOGF(LogStreaming,Warning,"Failed to read file '%ls' error.",Filename);
+@@ -251,6 +274,31 @@
+ 		{
+ 			bSuccess = LoadFileToString(FileData, *Reader, VerifyFlags);
+ 		}
++#if PLATFORM_WASM
++		// wndr wasm LFTS raw-fopen: CreateFileReader returns null on emscripten MEMFS (SimplyStream/IAS file
++		// layer) though raw POSIX works; fall back to fopen so uproject/config/text content loads.
++		if (!bSuccess)
++		{
++			FILE* _fp = fopen(TCHAR_TO_UTF8(Filename), "rb");
++			if (_fp)
++			{
++				fseek(_fp, 0, SEEK_END); long _sz = ftell(_fp); fseek(_fp, 0, SEEK_SET);
++				if (_sz >= 0)
++				{
++					TArray<uint8> _b; _b.SetNumUninitialized((int32)_sz + 1);
++					size_t _rd = (_sz > 0) ? fread(_b.GetData(), 1, (size_t)_sz, _fp) : 0;
++					fclose(_fp);
++					if ((long)_rd == _sz)
++					{
++						_b[(int32)_sz] = 0;
++						FFileHelper::BufferToString(FileData, _b.GetData(), (int32)_sz);
++						bSuccess = true;
++					}
++				}
++				else { fclose(_fp); }
++			}
++		}
++#endif
+ 
+ 		return FileData;
+ 	});
