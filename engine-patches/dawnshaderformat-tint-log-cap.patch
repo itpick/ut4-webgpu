@@ -1,0 +1,21 @@
+*** Begin Patch
+*** Update File: /mnt/vms/ss-build/UnrealEngine/Engine/Source/Developer/DawnShaderFormat/Private/DawnShaderCompiler.cpp
+@@
+ 	if (!BridgeResult.Success)
+ 	{
+-		const FString Diagnostic = BridgeResult.Diagnostic
++		FString Diagnostic = BridgeResult.Diagnostic
+ 			? Utf8BufToFString(BridgeResult.Diagnostic, BridgeResult.DiagnosticLen)
+ 			: FString(TEXT("(no diagnostic)"));
++		// A full Tint diagnostic may include a reflected-binding dump. During a
++		// permissive cook the same unsupported permutation can recur thousands
++		// of times, so retain the actionable first line without turning the cook
++		// log into a multi-gigabyte memory/disk pressure source.
++		Diagnostic.ReplaceInline(TEXT("\r"), TEXT(""));
++		int32 NewlineIndex = INDEX_NONE;
++		if (Diagnostic.FindChar(TEXT(n), NewlineIndex))
++		{
++			Diagnostic.LeftInline(NewlineIndex, EAllowShrinking::No);
++		}
+ 		Output.bSucceeded = false;
+*** End Patch
