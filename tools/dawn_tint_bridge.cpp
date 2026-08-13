@@ -614,6 +614,62 @@ namespace
 		Spirv = std::move(Out);
 	}
 
+	void StripViewportIndexLayer(std::vector<uint32_t>& Spirv)
+	{
+		if (Spirv.size() < 5) return;
+		const uint32_t OpExtensionOp = 10, OpCapabilityOp = 17, OpDecorateOp = 71;
+		const uint32_t DecoBuiltIn = 11, DecoLocation = 30, DecoFlat = 14;
+		const uint32_t BuiltInLayer = 9, BuiltInViewportIndex = 10;
+		const uint32_t CapViewportIndexLayerEXT = 5254;
+		// Pass 1: collect BuiltIn Layer/ViewportIndex target ids + highest Location in use.
+		std::vector<uint32_t> Targets; uint32_t MaxLoc = 0; bool AnyLoc = false;
+		size_t i = 5;
+		while (i < Spirv.size()) {
+			const uint32_t w0 = Spirv[i], op = w0 & 0xFFFFu, wc = w0 >> 16;
+			if (wc == 0 || i + wc > Spirv.size()) break;
+			if (op == OpDecorateOp && wc >= 4) {
+				const uint32_t deco = Spirv[i + 2];
+				if (deco == DecoBuiltIn && (Spirv[i + 3] == BuiltInLayer || Spirv[i + 3] == BuiltInViewportIndex))
+					Targets.push_back(Spirv[i + 1]);
+				else if (deco == DecoLocation) { AnyLoc = true; if (Spirv[i + 3] > MaxLoc) MaxLoc = Spirv[i + 3]; }
+			}
+			i += wc;
+		}
+		if (Targets.empty()) return;
+		uint32_t NextLoc = AnyLoc ? MaxLoc + 1u : 0u;
+		std::unordered_map<uint32_t, uint32_t> TargetLoc;
+		for (uint32_t t : Targets) if (!TargetLoc.count(t)) TargetLoc[t] = NextLoc++;
+		// Pass 2: rebuild, dropping the ext/cap and rewriting the builtin decorations.
+		std::vector<uint32_t> Out; Out.reserve(Spirv.size() + Targets.size() * 4);
+		Out.insert(Out.end(), Spirv.begin(), Spirv.begin() + 5);
+		i = 5;
+		while (i < Spirv.size()) {
+			const uint32_t w0 = Spirv[i], op = w0 & 0xFFFFu, wc = w0 >> 16;
+			if (wc == 0 || i + wc > Spirv.size()) { Out.insert(Out.end(), Spirv.begin() + i, Spirv.end()); break; }
+			bool drop = false;
+			if (op == OpCapabilityOp && wc == 2 && Spirv[i + 1] == CapViewportIndexLayerEXT) drop = true;
+			if (op == OpExtensionOp) {
+				std::string s; bool done = false;
+				for (size_t k = i + 1; k < i + wc && !done; ++k) {
+					const uint32_t word = Spirv[k];
+					for (int b = 0; b < 4; ++b) { const char c = (char)((word >> (b * 8)) & 0xFFu); if (!c) { done = true; break; } s.push_back(c); }
+				}
+				if (s == "SPV_EXT_shader_viewport_index_layer") drop = true;
+			}
+			if (op == OpDecorateOp && wc >= 4 && Spirv[i + 2] == DecoBuiltIn) {
+				auto it = TargetLoc.find(Spirv[i + 1]);
+				if (it != TargetLoc.end() && (Spirv[i + 3] == BuiltInLayer || Spirv[i + 3] == BuiltInViewportIndex)) {
+					Out.push_back((4u << 16) | OpDecorateOp); Out.push_back(Spirv[i + 1]); Out.push_back(DecoLocation); Out.push_back(it->second);
+					Out.push_back((3u << 16) | OpDecorateOp); Out.push_back(Spirv[i + 1]); Out.push_back(DecoFlat);
+					i += wc; continue;
+				}
+			}
+			if (!drop) Out.insert(Out.end(), Spirv.begin() + i, Spirv.begin() + i + wc);
+			i += wc;
+		}
+		Spirv = std::move(Out);
+	}
+
 	void LegalizeNonFiniteConstants(std::vector<uint32_t>& Spirv)
 	{
 		if (Spirv.size() < 5) return;
@@ -726,6 +782,7 @@ static FDawnTintCookResult DawnLegalizeAndCookImpl(const unsigned int* SpirvWord
 
 	LegalizeNonFiniteConstants(Spirv);
 	StripEarlyFragmentTests(Spirv);
+	StripViewportIndexLayer(Spirv);
 
 	std::string Wgsl, TintError;
 	if (!SpirvToWgsl(Spirv, Wgsl, TintError))
