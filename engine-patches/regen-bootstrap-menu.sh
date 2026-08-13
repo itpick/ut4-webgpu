@@ -13,6 +13,7 @@ ARGS=(
   "$OUT/ContentBootstrap.data"
   --preload "$COOK/Engine/GlobalShaderCache-SP_WEBGPU_ES31.bin@Engine/GlobalShaderCache-None.bin"
   --preload "$COOK/UnrealTournament/AssetRegistry.bin@UnrealTournament/AssetRegistry.bin"
+  --preload "$COOK/UnrealTournament/Metadata@UnrealTournament/Metadata"
   --preload "$UE/Engine/Platforms/SimplyStream/Config/DataDrivenPlatformInfo.ini@Engine/Platforms/SimplyStream/Config/DataDrivenPlatformInfo.ini"
   --preload "$UE/Engine/Platforms/SimplyStream/Config/DataDrivenPlatformInfo.ini@Engine/Config/SimplyStream/DataDrivenPlatformInfo.ini"
   --preload "$COOK/Engine/Content@Engine/Content"
