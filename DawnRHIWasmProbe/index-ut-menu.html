@@ -1,0 +1,106 @@
+<!doctype html><html><head><meta charset=utf-8><title>UnrealTournament wasm boot</title>
+<style>
+  html,body{margin:0;padding:0;background:#000;overflow:hidden}
+  /* The engine registers mousedown/mouseup on #canvas-container and wheel on #canvas.
+     Without this wrapper element those callbacks fail to attach -> clicks never reach Slate.
+     Size the container to the canvas render size (1280x720) so browser event coords map 1:1. */
+  #canvas-container{position:absolute;top:0;left:0;width:1280px;height:720px}
+  #canvas{display:block;width:1280px;height:720px;outline:none}
+</style></head>
+<body>
+<div id="canvas-container"><canvas class=emscripten id=canvas oncontextmenu="event.preventDefault()" tabindex=-1 width=1280 height=720></canvas></div>
+<script>
+// --- Audio autoplay unlock ---------------------------------------------------
+// The WebAudio mixer creates its AudioContext SUSPENDED (browser autoplay policy);
+// it only resumes on a user gesture. The engine's own hook is one-shot and can be
+// installed after the first click. Belt-and-suspenders: wrap AudioContext so we
+// track every context created, and resume ALL of them on EVERY user gesture until
+// they are running. Must run before the module (and its mixer) load.
+(function(){
+  window.__audioCtxs = [];
+  var Orig = window.AudioContext || window.webkitAudioContext;
+  if (Orig) {
+    var Wrapped = function(){ var c = new Orig(...arguments); window.__audioCtxs.push(c); return c; };
+    Wrapped.prototype = Orig.prototype;
+    try { window.AudioContext = Wrapped; } catch(e){}
+    try { window.webkitAudioContext = Wrapped; } catch(e){}
+  }
+  function resumeAll(){ (window.__audioCtxs||[]).forEach(function(c){ try { if (c && c.state !== 'running') c.resume().catch(function(){}); } catch(e){} }); }
+  ['pointerdown','mousedown','keydown','click','touchstart'].forEach(function(ev){ window.addEventListener(ev, resumeAll, true); });
+})();
+// Stub SimplyStream platform-loader state so the standalone boot does not throw on project_id.
+window.parent = window;
+window.state = window.parent.state = { ias:{}, project_id:"test", project_rev:"0", session_id:"00000000-0000-0000-0000-000000000000", platform_addr:"", asset_routing:{}, edge_boost_asset_host:"", vfs_asset_base_url:"" };
+var __c = document.getElementById("canvas");
+var Module = {
+  canvas: __c,
+  arguments: ["/Game/RestrictedAssets/Maps/UT-Entry", "-onethread", "-noasyncloadingthread", "-playoffline", "-ResX=1280", "-ResY=720", "-windowed",
+    "-WndrRDGParallelExecute=0",
+    "-ini:Engine:[ConsoleVariables]:r.RDG.ParallelExecute=0",
+    "-ini:Engine:[ConsoleVariables]:r.RHICmdBypass=1",
+    "-ini:Engine:[ConsoleVariables]:r.RHICmdUseParallelAlgorithms=0",
+    "-ini:Engine:[ConsoleVariables]:r.RDG.AsyncCompute=0",
+    "-ini:Engine:[ConsoleVariables]:r.Slate.EnableParallelRendering=0",
+    "-ini:Engine:[ConsoleVariables]:s.AsyncLoadingThreadEnabled=0",
+    "-ini:Engine:[ConsoleVariables]:s.AsyncLoadingUseFullTimeLimit=0",
+    "-ini:Engine:[ConsoleVariables]:UI.SlateSDFText.Enable=0",
+    "-ini:Engine:[ConsoleVariables]:SlateSdfText.Enable=0",
+    // ES3_1 mobile 3D: disable EVERY compute-heavy / post-process feature whose shaders don't
+    // cross-compile to WGSL (from the ES31 cook fail list). Keeps the basic forward mesh render.
+    // -dpcvars overrides the device profile (where GPUScene/SkinCache defaults live).
+    "-dpcvars=r.Mobile.SupportGPUScene=0,r.GPUScene.Enabled=0,r.SkinCache.Mode=0,r.SkinCache.CompileShaders=0,r.HZBOcclusion=0,r.DistanceFields=0,r.DistanceFieldShadowing=0,r.VolumetricFog=0,r.VirtualTextures=0,r.Mobile.AmbientOcclusion=0,r.LightFunctionQuality=0",
+    "-ini:Engine:[ConsoleVariables]:r.Mobile.SupportGPUScene=0",
+    "-ini:Engine:[ConsoleVariables]:r.GPUScene.Enabled=0",
+    "-ini:Engine:[ConsoleVariables]:r.SkinCache.Mode=0",
+    "-ini:Engine:[ConsoleVariables]:r.SkinCache.CompileShaders=0",
+    "-ini:Engine:[ConsoleVariables]:r.HZBOcclusion=0",
+    "-ini:Engine:[ConsoleVariables]:r.DistanceFields=0",
+    "-ini:Engine:[ConsoleVariables]:r.VolumetricFog=0",
+    "-ini:Engine:[ConsoleVariables]:r.VirtualTextures=0",
+    "-ini:Engine:[ConsoleVariables]:r.DefaultFeature.Bloom=0",
+    "-ini:Engine:[ConsoleVariables]:r.DefaultFeature.AmbientOcclusion=0",
+    "-ini:Engine:[ConsoleVariables]:r.DefaultFeature.AutoExposure=0",
+    "-ini:Engine:[ConsoleVariables]:r.DefaultFeature.MotionBlur=0",
+    "-ini:Engine:[ConsoleVariables]:r.DefaultFeature.AntiAliasing=0",
+    "-nomovie", "-nostartupmovies"],
+  print:   function(t){ console.log(t); },
+  printErr:function(t){ console.error(t); },
+  locateFile: function(p, pre){ return (pre||"") + p; },
+  onAbort: function(w){ console.error("ABORT: " + w); },
+  setStatus: function(t){ if (t) console.log("STATUS: " + t); },
+  onRuntimeInitialized: function(){
+    console.log("*** onRuntimeInitialized — wasm instantiated ***");
+    // SimplyStream's PollGameDeviceState pushes OnSizeChanged(canvas_w,canvas_h) with
+    // canvas_size_changed pre-armed to 1 but canvas_w/h=0 (the closed ResizeObserver
+    // never fires in this standalone harness) -> window collapses to 0x0 -> 8x8. Seed
+    // the shared globals with the real size (re-arms the push) so the window is 1280x720.
+    function seedSize(){ try { if (Module._viewportUpdate3) { Module._viewportUpdate3(1280,720,1280,720); return true; } } catch(e){} return false; }
+    seedSize();
+    // Re-seed for a while to (a) beat the worker's first poll and (b) correct any 0x0 already pushed.
+    var __seedN = 0; var __seedTimer = setInterval(function(){ seedSize(); if (++__seedN > 40) clearInterval(__seedTimer); }, 250);
+  },
+};
+window.onerror = function(m, src, line, col, err){ console.error("window.onerror: " + m + " @ " + src + ":" + line + (err && err.stack ? "\n" + err.stack : "")); };
+window.addEventListener("unhandledrejection", function(e){ console.error("unhandledrejection: " + (e.reason && (e.reason.stack || e.reason.message || e.reason) || e.reason)); });
+// Heartbeat so a polled console log shows liveness even if the engine itself is silent.
+var __t0 = Date.now();
+setInterval(function(){ console.log("[heartbeat] t+" + Math.round((Date.now()-__t0)/1000) + "s"); }, 15000);
+</script>
+<script src="ContentBootstrap.js"></script>
+<script src="SlateAssets.js"></script>
+<script>
+// DawnRHI (non-PROXY_TO_PTHREAD): pre-acquire the WebGPU device in JS so the wasm
+// RHI gets it synchronously via emscripten_webgpu_get_device().
+(async () => {
+  try {
+    const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+    const device = await adapter.requestDevice();
+    Module.preinitializedWebGPUDevice = device;
+    console.log("*** preinitializedWebGPUDevice acquired for DawnRHI ***");
+  } catch (e) { console.error("WebGPU device pre-acquire failed: " + e); }
+  const t = document.createElement('script');
+  t.src = 'UnrealTournament.js'; t.async = true;
+  document.body.appendChild(t);
+})();
+</script>
+</body></html>

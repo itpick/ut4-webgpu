@@ -29,6 +29,7 @@ add_dir "UnrealTournament/Content/RestrictedAssets/Fonts"
 add_dir "UnrealTournament/Content/RestrictedAssets/SlateLargeImages"
 add_dir "UnrealTournament/Content/RestrictedAssets/Maps"
 add_dir "UnrealTournament/Content/RestrictedAssets/Blueprints"
+add_dir "UnrealTournament/Content/RestrictedAssets/Tutorials"
 echo "response file entries: $(wc -l < "$RESP")"
 
 printf -- '-Output=%s/utcontent.utoc -ContainerName=utcontent -ResponseFile=%s\n' "$OUT" "$RESP" > "$CMDS"
